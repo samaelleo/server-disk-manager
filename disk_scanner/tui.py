@@ -35,11 +35,14 @@ BG_RED = "\033[41m\033[37m"
 def get_key() -> str:
     """
     Cross-platform single keypress reader.
-    Returns strings like 'UP', 'DOWN', 'PAGE_UP', 'PAGE_DOWN', 'DELETE', 'ENTER', 'ESC', 'q', 'd', etc.
+    Handles DOS scancodes (\\xe0, \\x00) AND ANSI escape sequences (\\x1b[A, \\x1b[B)
+    preventing accidental exit in modern terminals (PyCharm, Windows Terminal, VS Code, SSH).
     """
     if os.name == "nt":
         import msvcrt
         ch = msvcrt.getch()
+
+        # 1. DOS special keys (\x00 or \xe0)
         if ch in (b"\x00", b"\xe0"):
             ch2 = msvcrt.getch()
             mapping = {
@@ -51,13 +54,49 @@ def get_key() -> str:
                 b"I": "PAGE_UP",
                 b"Q": "PAGE_DOWN",
             }
-            return mapping.get(ch2, "SPECIAL")
-        if ch == b"\r":
-            return "ENTER"
+            return mapping.get(ch2, "UNKNOWN")
+
+        # 2. ANSI VT100 Escape sequences (\x1b[A, \x1b[B, etc.) in PyCharm / Windows Terminal
         if ch == b"\x1b":
+            # Check if more bytes are in buffer (arrow keys send \x1b[A or \x1bOA)
+            start_time = time.time()
+            while not msvcrt.kbhit() and (time.time() - start_time) < 0.05:
+                time.sleep(0.005)
+
+            if msvcrt.kbhit():
+                ch2 = msvcrt.getch()
+                if ch2 in (b"[", b"O"):
+                    start_time = time.time()
+                    while not msvcrt.kbhit() and (time.time() - start_time) < 0.05:
+                        time.sleep(0.005)
+                    if msvcrt.kbhit():
+                        ch3 = msvcrt.getch()
+                        ansi_map = {
+                            b"A": "UP",
+                            b"B": "DOWN",
+                            b"C": "RIGHT",
+                            b"D": "LEFT",
+                            b"H": "HOME",
+                            b"F": "END",
+                        }
+                        if ch3 in ansi_map:
+                            return ansi_map[ch3]
+                        if ch3 in (b"1", b"2", b"3", b"4", b"5", b"6"):
+                            if msvcrt.kbhit():
+                                msvcrt.getch()  # consume ~
+                            if ch3 == b"3":
+                                return "DELETE"
+                            if ch3 == b"5":
+                                return "PAGE_UP"
+                            if ch3 == b"6":
+                                return "PAGE_DOWN"
             return "ESC"
-        if ch == b"\x08":
+
+        if ch in (b"\r", b"\n"):
+            return "ENTER"
+        if ch in (b"\x08", b"\x7f"):
             return "BACKSPACE"
+
         try:
             return ch.decode("utf-8", errors="ignore")
         except Exception:
@@ -73,28 +112,32 @@ def get_key() -> str:
             tty.setraw(fd)
             ch = sys.stdin.read(1)
             if ch == "\x1b":
-                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                r, _, _ = select.select([sys.stdin], [], [], 0.06)
                 if r:
                     ch2 = sys.stdin.read(1)
-                    if ch2 == "[":
-                        ch3 = sys.stdin.read(1)
-                        mapping = {
-                            "A": "UP",
-                            "B": "DOWN",
-                            "C": "RIGHT",
-                            "D": "LEFT",
-                        }
-                        if ch3 in mapping:
-                            return mapping[ch3]
-                        if ch3 == "3":
-                            sys.stdin.read(1)  # ~
-                            return "DELETE"
-                        if ch3 == "5":
-                            sys.stdin.read(1)
-                            return "PAGE_UP"
-                        if ch3 == "6":
-                            sys.stdin.read(1)
-                            return "PAGE_DOWN"
+                    if ch2 in ("[", "O"):
+                        r2, _, _ = select.select([sys.stdin], [], [], 0.06)
+                        if r2:
+                            ch3 = sys.stdin.read(1)
+                            ansi_map = {
+                                "A": "UP",
+                                "B": "DOWN",
+                                "C": "RIGHT",
+                                "D": "LEFT",
+                                "H": "HOME",
+                                "F": "END",
+                            }
+                            if ch3 in ansi_map:
+                                return ansi_map[ch3]
+                            if ch3 in ("1", "2", "3", "4", "5", "6"):
+                                select.select([sys.stdin], [], [], 0.03)
+                                sys.stdin.read(1)  # consume ~
+                                if ch3 == "3":
+                                    return "DELETE"
+                                if ch3 == "5":
+                                    return "PAGE_UP"
+                                if ch3 == "6":
+                                    return "PAGE_DOWN"
                 return "ESC"
             if ch in ("\r", "\n"):
                 return "ENTER"
@@ -103,6 +146,7 @@ def get_key() -> str:
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
 
 
 def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
@@ -290,9 +334,10 @@ class DiskManagerTUI:
         lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
 
         # Controls & Hotkeys Footer
-        hotkeys = " [↑/↓] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
+        hotkeys = " [↑/↓ or k/j] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
         lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
         lines.append(f"{C_CYAN}└" + "─" * (w - 2) + f"┘{C_RESET}")
+
 
         # Render buffer to terminal
         sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
@@ -417,23 +462,32 @@ class DiskManagerTUI:
                 self.draw()
                 key = get_key()
 
-                if key in ("q", "Q", "ESC"):
+                if key in ("q", "Q"):
                     break
-                elif key == "UP":
+                elif key == "ESC":
+                    if self.filter_query:
+                        self.filter_query = ""
+                        self.apply_filter_and_sort()
+                        self.status_msg = "Filter cleared."
+                        self.status_color = C_CYAN
+                    else:
+                        break
+                elif key in ("UP", "k", "K", "w", "W"):
                     if self.selected_idx > 0:
                         self.selected_idx -= 1
-                elif key == "DOWN":
+                elif key in ("DOWN", "j", "J"):
                     if self.selected_idx < len(self.filtered_files) - 1:
                         self.selected_idx += 1
-                elif key == "PAGE_UP":
+                elif key in ("PAGE_UP", "LEFT"):
                     self.selected_idx = max(0, self.selected_idx - 15)
-                elif key == "PAGE_DOWN":
+                elif key in ("PAGE_DOWN", "RIGHT"):
                     self.selected_idx = min(len(self.filtered_files) - 1, self.selected_idx + 15)
                 elif key in ("d", "D", "DELETE"):
                     self.delete_selected()
                 elif key in ("o", "O", "ENTER"):
                     self.show_details()
                 elif key == "/":
+
                     self.prompt_filter()
                 elif key in ("s", "S"):
                     self.toggle_sort()
