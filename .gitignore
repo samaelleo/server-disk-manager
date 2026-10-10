@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm / IDE
+.idea/
+.vscode/
+
+# Output reports
+*.csv
+*.json
+!test_*.json
+
+# Environments
+.env
+venv/
+env/
