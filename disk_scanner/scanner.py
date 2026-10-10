@@ -7,6 +7,9 @@ from typing import Callable, Generator, List, Optional
 
 from .utils import format_size, format_timestamp, is_symlink_or_reparse
 
+# Virtual pseudo-filesystems in Linux that should be skipped during disk scans
+IGNORED_SYSTEM_DIRS = {"/proc", "/sys", "/dev", "/run"}
+
 
 @dataclass
 class FileInfo:
@@ -81,6 +84,10 @@ class DiskScanner:
                                 continue
 
                             if entry.is_dir(follow_symlinks=self.follow_symlinks):
+                                if os.name != "nt":
+                                    norm_p = os.path.normpath(entry.path)
+                                    if norm_p in IGNORED_SYSTEM_DIRS:
+                                        continue
                                 stack.append(entry.path)
                             elif entry.is_file(follow_symlinks=self.follow_symlinks):
                                 self.stats.total_files_scanned += 1

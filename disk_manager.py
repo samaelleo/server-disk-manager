@@ -94,6 +94,14 @@ def get_available_drives() -> list:
     return drives
 
 
+def get_default_scan_path() -> str:
+    """Returns the root storage path of the server ('/' on Linux/Unix, 'C:\\' on Windows)."""
+    if os.name == "nt":
+        drives = get_available_drives()
+        return drives[0]["path"] if drives else "C:\\"
+    return "/"
+
+
 # --- DOCKER MANAGER ---
 def parse_size_to_bytes(size_str: str) -> int:
     s = size_str.strip().upper()
@@ -258,6 +266,9 @@ class ScanStats:
     total_large_files_bytes: int = 0
 
 
+IGNORED_SYSTEM_DIRS = {"/proc", "/sys", "/dev", "/run"}
+
+
 class DiskScanner:
     def __init__(
         self,
@@ -293,6 +304,10 @@ class DiskScanner:
                                 continue
 
                             if entry.is_dir(follow_symlinks=self.follow_symlinks):
+                                if os.name != "nt":
+                                    norm_p = os.path.normpath(entry.path)
+                                    if norm_p in IGNORED_SYSTEM_DIRS:
+                                        continue
                                 stack.append(entry.path)
                             elif entry.is_file(follow_symlinks=self.follow_symlinks):
                                 self.stats.total_files_scanned += 1
@@ -621,7 +636,9 @@ def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
 
 
 class DiskManagerTUI:
-    def __init__(self, target_path: str = ".", min_size_mb: float = 100.0):
+    def __init__(self, target_path: Optional[str] = None, min_size_mb: float = 100.0):
+        if not target_path or target_path == ".":
+            target_path = get_default_scan_path()
         self.target_path = os.path.abspath(target_path)
         self.min_size_mb = min_size_mb
         self.active_tab = "files"
@@ -1110,7 +1127,9 @@ class DiskManagerTUI:
             sys.stdout.flush()
 
 
-def launch_tui(target_path: str = ".", min_size_mb: float = 100.0) -> None:
+def launch_tui(target_path: Optional[str] = None, min_size_mb: float = 100.0) -> None:
+    if not target_path or target_path == ".":
+        target_path = get_default_scan_path()
     tui = DiskManagerTUI(target_path=target_path, min_size_mb=min_size_mb)
     tui.run()
 
@@ -1165,7 +1184,7 @@ def prompt_guided_scan() -> None:
     print("-" * 75)
 
     drives = get_available_drives()
-    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    default_path = get_default_scan_path()
 
     print("\n[Step 1/5] Select Target Location:")
     if drives:
@@ -1235,7 +1254,7 @@ def prompt_tui_mode() -> None:
     print("          LAUNCH BASHTOP-STYLE TUI DASHBOARD")
     print("-" * 75)
     drives = get_available_drives()
-    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    default_path = get_default_scan_path()
 
     if drives:
         print("Available Storage Drives:")
@@ -1264,8 +1283,7 @@ def prompt_tui_mode() -> None:
 
 
 def quick_scan_default() -> None:
-    drives = get_available_drives()
-    target_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    target_path = get_default_scan_path()
     print(f"\n[QUICK SCAN] Scanning {target_path} for files >= 100 MB...")
     run_scan(target_path=target_path, min_size_mb=100.0, csv_output="large_files_report.csv", limit=50, follow_symlinks=False)
 
@@ -1330,12 +1348,13 @@ def main():
         sys.exit(0)
 
     headless_export = any([args.csv, args.json, "--limit" in sys.argv, "-l" in sys.argv])
+    default_target = get_default_scan_path()
     if headless_export:
-        target = args.path if args.path else "."
+        target = args.path if args.path else default_target
         run_scan(target_path=target, min_size_mb=args.min_size, csv_output=args.csv, json_output=args.json, limit=args.limit, follow_symlinks=args.follow_symlinks)
     else:
         # DEFAULT: Launch TUI directly!
-        target = args.path if args.path else "."
+        target = args.path if args.path else default_target
         launch_tui(target_path=target, min_size_mb=args.min_size)
 
 

@@ -22,7 +22,7 @@ if sys.platform == "win32":
 
 from disk_scanner.scanner import DiskScanner
 from disk_scanner.reporter import Reporter
-from disk_scanner.utils import get_available_drives, format_size
+from disk_scanner.utils import get_available_drives, format_size, get_default_scan_path
 from disk_scanner.tui import launch_tui
 
 
@@ -108,7 +108,7 @@ def prompt_guided_scan() -> None:
 
     # 1. Target Path Selection
     drives = get_available_drives()
-    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    default_path = get_default_scan_path()
 
     print("\n[Step 1/5] Select Target Location:")
     if drives:
@@ -192,8 +192,7 @@ def quick_scan_default() -> None:
     """
     Performs an instant scan on the default system drive for files >= 100 MB.
     """
-    drives = get_available_drives()
-    target_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    target_path = get_default_scan_path()
     print(f"\n[QUICK SCAN] Scanning {target_path} for files >= 100 MB...")
     run_scan(
         target_path=target_path,
@@ -213,7 +212,7 @@ def prompt_tui_mode() -> None:
     print("-" * 75)
 
     drives = get_available_drives()
-    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+    default_path = get_default_scan_path()
 
     if drives:
         print("Available Storage Drives:")
@@ -355,8 +354,9 @@ def main():
     # If export flags or limit are specified, run non-interactive CLI scan
     headless_export = any([args.csv, args.json, "--limit" in sys.argv, "-l" in sys.argv])
 
+    default_target = get_default_scan_path()
     if headless_export:
-        target = args.path if args.path else "."
+        target = args.path if args.path else default_target
         run_scan(
             target_path=target,
             min_size_mb=args.min_size,
@@ -367,7 +367,7 @@ def main():
         )
     else:
         # DEFAULT: Launch interactive Bashtop-style TUI directly!
-        target = args.path if args.path else "."
+        target = args.path if args.path else default_target
         launch_tui(target_path=target, min_size_mb=args.min_size)
 
 

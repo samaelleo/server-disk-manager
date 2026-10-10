@@ -12,7 +12,7 @@ import time
 from typing import List, Optional
 
 from .scanner import DiskScanner, FileInfo
-from .utils import format_size, format_timestamp, get_available_drives
+from .utils import format_size, format_timestamp, get_available_drives, get_default_scan_path
 from .docker_manager import DockerManager, DockerImage
 
 # ANSI Color and Styling constants
@@ -224,7 +224,9 @@ class DiskManagerTUI:
     Bashtop-inspired Terminal User Interface for managing heavy files and Docker images.
     """
 
-    def __init__(self, target_path: str = ".", min_size_mb: float = 100.0):
+    def __init__(self, target_path: Optional[str] = None, min_size_mb: float = 100.0):
+        if not target_path or target_path == ".":
+            target_path = get_default_scan_path()
         self.target_path = os.path.abspath(target_path)
         self.min_size_mb = min_size_mb
         self.active_tab = "files"  # "files" or "docker"
@@ -772,7 +774,9 @@ class DiskManagerTUI:
             sys.stdout.flush()
 
 
-def launch_tui(target_path: str = ".", min_size_mb: float = 100.0) -> None:
+def launch_tui(target_path: Optional[str] = None, min_size_mb: float = 100.0) -> None:
     """Helper entry point to start the TUI."""
+    if not target_path or target_path == ".":
+        target_path = get_default_scan_path()
     tui = DiskManagerTUI(target_path=target_path, min_size_mb=min_size_mb)
     tui.run()

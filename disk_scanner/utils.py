@@ -75,3 +75,15 @@ def get_available_drives() -> list:
                     pass
     return drives
 
+
+def get_default_scan_path() -> str:
+    """
+    Returns the root storage path of the server.
+    On Linux/Unix: '/' (system root, not /root user folder).
+    On Windows: Primary drive letter, e.g. 'C:\\'.
+    """
+    if os.name == "nt":
+        drives = get_available_drives()
+        return drives[0]["path"] if drives else "C:\\"
+    return "/"
+

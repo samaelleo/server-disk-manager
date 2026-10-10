@@ -5,7 +5,7 @@ import unittest
 
 from disk_scanner.scanner import DiskScanner, FileInfo
 from disk_scanner.reporter import Reporter
-from disk_scanner.utils import format_size, format_timestamp, get_available_drives
+from disk_scanner.utils import format_size, format_timestamp, get_available_drives, get_default_scan_path
 
 
 class TestDiskScanner(unittest.TestCase):
@@ -83,6 +83,14 @@ class TestDiskScanner(unittest.TestCase):
         self.assertGreater(len(drives), 0)
         self.assertIn("path", drives[0])
         self.assertIn("free", drives[0])
+
+    def test_get_default_scan_path(self):
+        default_path = get_default_scan_path()
+        self.assertIsInstance(default_path, str)
+        if os.name == "nt":
+            self.assertTrue(default_path.endswith(":\\"))
+        else:
+            self.assertEqual(default_path, "/")
 
     def test_tui_filtering_and_sorting(self):
         from disk_scanner.tui import DiskManagerTUI, make_gauge_bar
