@@ -139,14 +139,14 @@ def get_key() -> str:
         if ch == b"\x1b":
             seq = [b"\x1b"]
             start_time = time.time()
-            while (time.time() - start_time) < 0.15:
+            while (time.time() - start_time) < 0.10:
                 if msvcrt.kbhit():
                     seq.append(msvcrt.getch())
                     start_time = time.time()
                     if len(seq) >= 10:
                         break
                 else:
-                    time.sleep(0.005)
+                    time.sleep(0.002)
 
             return parse_escape_sequence(b"".join(seq))
 
@@ -166,36 +166,47 @@ def get_key() -> str:
         import termios
         import tty
 
+        # If stdin is not a TTY (e.g. piped via curl), attempt to read from /dev/tty
         fd = sys.stdin.fileno()
+        tty_opened = False
+        try:
+            if not os.isatty(fd):
+                fd = os.open("/dev/tty", os.O_RDWR)
+                tty_opened = True
+        except Exception:
+            pass
+
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                seq = [b"\x1b"]
-                start_time = time.time()
-                while (time.time() - start_time) < 0.15:
-                    r, _, _ = select.select([sys.stdin], [], [], 0.03)
-                    if r:
-                        c = sys.stdin.read(1)
-                        seq.append(c.encode("utf-8", errors="ignore"))
-                        start_time = time.time()
-                        if len(seq) >= 10:
-                            break
-                    else:
-                        break
+            # Use raw unbuffered OS read to prevent Python TextIOWrapper from swallowing escape sequences
+            ch = os.read(fd, 1)
+            if ch == b"\x1b":
+                # Check if trailing escape sequence bytes are available in the OS buffer
+                r, _, _ = select.select([fd], [], [], 0.08)
+                if r:
+                    rest = os.read(fd, 32)
+                    return parse_escape_sequence(ch + rest)
+                return "ESC"
 
-                return parse_escape_sequence(b"".join(seq))
-
-            if ch == "\t":
+            if ch in (b"\t",):
                 return "TAB"
-            if ch in ("\r", "\n"):
+            if ch in (b"\r", b"\n"):
                 return "ENTER"
-            if ch in ("\x7f", "\x08"):
+            if ch in (b"\x7f", b"\x08"):
                 return "BACKSPACE"
-            return ch
+
+            try:
+                return ch.decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if tty_opened:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
 
 
 
