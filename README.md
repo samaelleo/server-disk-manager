@@ -8,7 +8,31 @@ All console output, reports, and table headers are in **English**, and the tool 
 
 ## ⚡ Quick Start / Run Instructions (دستور اجرا)
 
-### Clone & Run:
+### 🚀 One-Line Temporary Run with `curl` (اجرای موقت بدون نیاز به کلون):
+
+Run directly on any server without cloning or saving permanent files:
+
+#### 🐧 Linux / macOS:
+```bash
+# Interactive menu (Zero-trace, auto-deletes when done)
+bash <(curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/run.sh)
+
+# Or directly with arguments (Scan root / for >= 100MB, save report.csv):
+curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python3 - -p / -s 100 -c /tmp/large_files.csv
+```
+
+#### 🪟 Windows (PowerShell):
+```powershell
+# Interactive menu (Temporary run, auto-cleans up)
+curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py -o $env:TEMP\dm.py; python $env:TEMP\dm.py; Remove-Item $env:TEMP\dm.py
+
+# Or directly with arguments:
+curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python - -p C:\ -s 100 -c large_files.csv
+```
+
+---
+
+### 📦 Standard Clone & Run:
 ```bash
 # Clone the repository
 git clone https://github.com/samaelleo/server-disk-manager.git
@@ -20,8 +44,8 @@ cd server-disk-manager
 python main.py
 ```
 
-### Windows & Linux One-Liners:
-- **Interactive Menu (Recommended):**
+### CLI One-Liners:
+- **Interactive Menu:**
   ```bash
   python main.py
   ```
