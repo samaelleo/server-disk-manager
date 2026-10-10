@@ -34,10 +34,95 @@ BG_BLUE = "\033[44m\033[37m"
 BG_RED = "\033[41m\033[37m"
 
 
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+DOS_KEY_MAP = {
+    b"H": "UP",
+    b"\x48": "UP",
+    b"8": "UP",
+    b"\x8d": "UP",      # Ctrl+Up
+    b"P": "DOWN",
+    b"\x50": "DOWN",
+    b"2": "DOWN",
+    b"\x91": "DOWN",    # Ctrl+Down
+    b"K": "LEFT",
+    b"\x4b": "LEFT",
+    b"4": "LEFT",
+    b"s": "LEFT",       # Ctrl+Left
+    b"M": "RIGHT",
+    b"\x4d": "RIGHT",
+    b"6": "RIGHT",
+    b"t": "RIGHT",      # Ctrl+Right
+    b"S": "DELETE",
+    b"\x53": "DELETE",
+    b".": "DELETE",
+    b"\x93": "DELETE",  # Ctrl+Del
+    b"I": "PAGE_UP",
+    b"\x49": "PAGE_UP",
+    b"9": "PAGE_UP",
+    b"\x84": "PAGE_UP", # Ctrl+PgUp
+    b"Q": "PAGE_DOWN",
+    b"\x51": "PAGE_DOWN",
+    b"3": "PAGE_DOWN",
+    b"v": "PAGE_DOWN",  # Ctrl+PgDn
+    b"G": "HOME",
+    b"\x47": "HOME",
+    b"7": "HOME",
+    b"w": "HOME",       # Ctrl+Home
+    b"O": "END",
+    b"\x4f": "END",
+    b"1": "END",
+    b"u": "END",        # Ctrl+End
+    b"R": "INSERT",
+    b"\x52": "INSERT",
+    b"0": "INSERT",
+}
+
+
+def parse_escape_sequence(full: bytes) -> str:
+    """
+    Decodes an ANSI/VT escape sequence into a normalized key action name.
+    Supports standard VT100, xterm, ConPTY, rxvt, and cursor application modes.
+    """
+    if not full or full == b"\x1b":
+        return "ESC"
+
+    # Arrow keys across terminal emulators
+    if full.endswith((b"A", b"a")):
+        return "UP"
+    if full.endswith((b"B", b"b")):
+        return "DOWN"
+    if full.endswith((b"C", b"c")):
+        return "RIGHT"
+    if full.endswith((b"D", b"d")):
+        return "LEFT"
+
+    # Paging and special navigation keys
+    if b"5~" in full or full.endswith(b"I"):
+        return "PAGE_UP"
+    if b"6~" in full or full.endswith(b"Q"):
+        return "PAGE_DOWN"
+    if b"3~" in full or full.endswith(b"S"):
+        return "DELETE"
+    if b"1~" in full or b"7~" in full or full.endswith((b"H", b"G")):
+        return "HOME"
+    if b"4~" in full or b"8~" in full or full.endswith((b"F", b"O")):
+        return "END"
+
+    return "UNKNOWN"
+
+
 def get_key() -> str:
     """
     Cross-platform single keypress reader.
-    Handles DOS scancodes (\\xe0, \\x00) AND ANSI escape sequences (\\x1b[A, \\x1b[B)
+    Handles DOS scancodes (\\xe0, \\x00) and ANSI escape sequences (\\x1b[A, \\x1bOA, etc.)
     preventing accidental exit in modern terminals (PyCharm, Windows Terminal, VS Code, SSH).
     """
     if os.name == "nt":
@@ -48,51 +133,22 @@ def get_key() -> str:
         # 1. DOS special keys (\x00 or \xe0)
         if ch in (b"\x00", b"\xe0"):
             ch2 = msvcrt.getch()
-            mapping = {
-                b"H": "UP",
-                b"P": "DOWN",
-                b"K": "LEFT",
-                b"M": "RIGHT",
-                b"S": "DELETE",
-                b"I": "PAGE_UP",
-                b"Q": "PAGE_DOWN",
-            }
-            return mapping.get(ch2, "UNKNOWN")
+            return DOS_KEY_MAP.get(ch2, "UNKNOWN")
 
-        # 2. ANSI VT100 Escape sequences in PyCharm / Windows Terminal
+        # 2. ANSI VT escape sequences (Windows Terminal, PyCharm, ConPTY, VS Code, SSH)
         if ch == b"\x1b":
+            seq = [b"\x1b"]
             start_time = time.time()
-            while not msvcrt.kbhit() and (time.time() - start_time) < 0.05:
-                time.sleep(0.005)
-
-            if msvcrt.kbhit():
-                ch2 = msvcrt.getch()
-                if ch2 in (b"[", b"O"):
+            while (time.time() - start_time) < 0.15:
+                if msvcrt.kbhit():
+                    seq.append(msvcrt.getch())
                     start_time = time.time()
-                    while not msvcrt.kbhit() and (time.time() - start_time) < 0.05:
-                        time.sleep(0.005)
-                    if msvcrt.kbhit():
-                        ch3 = msvcrt.getch()
-                        ansi_map = {
-                            b"A": "UP",
-                            b"B": "DOWN",
-                            b"C": "RIGHT",
-                            b"D": "LEFT",
-                            b"H": "HOME",
-                            b"F": "END",
-                        }
-                        if ch3 in ansi_map:
-                            return ansi_map[ch3]
-                        if ch3 in (b"1", b"2", b"3", b"4", b"5", b"6"):
-                            if msvcrt.kbhit():
-                                msvcrt.getch()  # consume ~
-                            if ch3 == b"3":
-                                return "DELETE"
-                            if ch3 == b"5":
-                                return "PAGE_UP"
-                            if ch3 == b"6":
-                                return "PAGE_DOWN"
-            return "ESC"
+                    if len(seq) >= 10:
+                        break
+                else:
+                    time.sleep(0.005)
+
+            return parse_escape_sequence(b"".join(seq))
 
         if ch in (b"\t",):
             return "TAB"
@@ -116,33 +172,21 @@ def get_key() -> str:
             tty.setraw(fd)
             ch = sys.stdin.read(1)
             if ch == "\x1b":
-                r, _, _ = select.select([sys.stdin], [], [], 0.06)
-                if r:
-                    ch2 = sys.stdin.read(1)
-                    if ch2 in ("[", "O"):
-                        r2, _, _ = select.select([sys.stdin], [], [], 0.06)
-                        if r2:
-                            ch3 = sys.stdin.read(1)
-                            ansi_map = {
-                                "A": "UP",
-                                "B": "DOWN",
-                                "C": "RIGHT",
-                                "D": "LEFT",
-                                "H": "HOME",
-                                "F": "END",
-                            }
-                            if ch3 in ansi_map:
-                                return ansi_map[ch3]
-                            if ch3 in ("1", "2", "3", "4", "5", "6"):
-                                select.select([sys.stdin], [], [], 0.03)
-                                sys.stdin.read(1)  # consume ~
-                                if ch3 == "3":
-                                    return "DELETE"
-                                if ch3 == "5":
-                                    return "PAGE_UP"
-                                if ch3 == "6":
-                                    return "PAGE_DOWN"
-                return "ESC"
+                seq = [b"\x1b"]
+                start_time = time.time()
+                while (time.time() - start_time) < 0.15:
+                    r, _, _ = select.select([sys.stdin], [], [], 0.03)
+                    if r:
+                        c = sys.stdin.read(1)
+                        seq.append(c.encode("utf-8", errors="ignore"))
+                        start_time = time.time()
+                        if len(seq) >= 10:
+                            break
+                    else:
+                        break
+
+                return parse_escape_sequence(b"".join(seq))
+
             if ch == "\t":
                 return "TAB"
             if ch in ("\r", "\n"):
@@ -152,6 +196,7 @@ def get_key() -> str:
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
 
 
 def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
@@ -274,9 +319,20 @@ class DiskManagerTUI:
         # Bottom Border
         lines.append(f"{C_CYAN}└" + "─" * (w - 2) + f"┘{C_RESET}")
 
-        # Write buffer
-        sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
-        sys.stdout.flush()
+        # Write buffer safely (handles Windows terminal encoding without crashing)
+        output_str = "\033[H" + "\n".join(lines) + "\033[J"
+        try:
+            sys.stdout.write(output_str)
+            sys.stdout.flush()
+        except UnicodeEncodeError:
+            try:
+                sys.stdout.buffer.write(output_str.encode("utf-8", errors="replace"))
+                sys.stdout.buffer.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
 
     def _draw_files_tab(self, lines: List[str], w: int, term_lines: int) -> None:
         """Renders the Large Files tab."""
@@ -362,7 +418,7 @@ class DiskManagerTUI:
         lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
 
         # Controls & Hotkeys Footer
-        hotkeys = " [TAB] Docker  [↑/↓] Move  [d/DEL] Delete File  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
+        hotkeys = " [TAB] Docker  [↑/↓ or k/j] Move  [d/DEL] Delete File  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
         lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
 
     def _draw_docker_tab(self, lines: List[str], w: int, term_lines: int) -> None:
@@ -448,7 +504,7 @@ class DiskManagerTUI:
         status_line = self.status_msg if self.status_msg else "Use 'd' to delete selected image, 'p' to prune all unused images."
         lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
 
-        hotkeys = " [TAB] Files  [↑/↓] Move  [d/DEL] Remove Image  [p] Prune Unused  [r] Refresh  [q] Quit "
+        hotkeys = " [TAB] Files  [↑/↓ or k/j] Move  [d/DEL] Remove Image  [p] Prune Unused  [r] Refresh  [q] Quit "
         lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
 
     def show_details(self) -> None:
@@ -637,7 +693,8 @@ class DiskManagerTUI:
                         self.status_msg = "Filter cleared."
                         self.status_color = C_CYAN
                     else:
-                        break
+                        self.status_msg = "Press 'q' to quit."
+                        self.status_color = C_YELLOW
                 elif key in ("TAB", "tab"):
                     # Toggle between tabs
                     self.active_tab = "docker" if self.active_tab == "files" else "files"
@@ -700,6 +757,16 @@ class DiskManagerTUI:
                     self.load_docker()
                     self.status_msg = "[REFRESHED] Refresh complete."
                     self.status_color = C_GREEN
+        except Exception as e:
+            import traceback
+            sys.stdout.write("\033[?25h\033[0m\n")
+            sys.stdout.flush()
+            print(f"\n[ERROR] An unexpected error occurred: {e}")
+            traceback.print_exc()
+            try:
+                input("\nPress [Enter] to exit...")
+            except Exception:
+                pass
         finally:
             sys.stdout.write("\033[?25h\033[2J\033[H")
             sys.stdout.flush()

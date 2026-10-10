@@ -114,6 +114,42 @@ class TestDiskScanner(unittest.TestCase):
         self.assertIsInstance(running, bool)
         self.assertIsInstance(msg, str)
 
+    def test_key_decoding(self):
+        from disk_scanner.tui import parse_escape_sequence, DOS_KEY_MAP
+
+        # ANSI / VT Escape sequences
+        self.assertEqual(parse_escape_sequence(b"\x1b[A"), "UP")
+        self.assertEqual(parse_escape_sequence(b"\x1bOA"), "UP")
+        self.assertEqual(parse_escape_sequence(b"\x1b[1;5A"), "UP")
+        self.assertEqual(parse_escape_sequence(b"\x1b[1;2A"), "UP")
+        self.assertEqual(parse_escape_sequence(b"\x1b[a"), "UP")
+
+        self.assertEqual(parse_escape_sequence(b"\x1b[B"), "DOWN")
+        self.assertEqual(parse_escape_sequence(b"\x1bOB"), "DOWN")
+        self.assertEqual(parse_escape_sequence(b"\x1b[1;5B"), "DOWN")
+        self.assertEqual(parse_escape_sequence(b"\x1b[1;2B"), "DOWN")
+        self.assertEqual(parse_escape_sequence(b"\x1b[b"), "DOWN")
+
+        self.assertEqual(parse_escape_sequence(b"\x1b[C"), "RIGHT")
+        self.assertEqual(parse_escape_sequence(b"\x1b[D"), "LEFT")
+        self.assertEqual(parse_escape_sequence(b"\x1b[5~"), "PAGE_UP")
+        self.assertEqual(parse_escape_sequence(b"\x1b[6~"), "PAGE_DOWN")
+        self.assertEqual(parse_escape_sequence(b"\x1b[3~"), "DELETE")
+        self.assertEqual(parse_escape_sequence(b"\x1b"), "ESC")
+
+        # DOS scancodes
+        self.assertEqual(DOS_KEY_MAP.get(b"H"), "UP")
+        self.assertEqual(DOS_KEY_MAP.get(b"8"), "UP")
+        self.assertEqual(DOS_KEY_MAP.get(b"\x8d"), "UP")
+        self.assertEqual(DOS_KEY_MAP.get(b"P"), "DOWN")
+        self.assertEqual(DOS_KEY_MAP.get(b"2"), "DOWN")
+        self.assertEqual(DOS_KEY_MAP.get(b"\x91"), "DOWN")
+        self.assertEqual(DOS_KEY_MAP.get(b"K"), "LEFT")
+        self.assertEqual(DOS_KEY_MAP.get(b"M"), "RIGHT")
+        self.assertEqual(DOS_KEY_MAP.get(b"S"), "DELETE")
+        self.assertEqual(DOS_KEY_MAP.get(b"I"), "PAGE_UP")
+        self.assertEqual(DOS_KEY_MAP.get(b"Q"), "PAGE_DOWN")
+
 
 if __name__ == "__main__":
     unittest.main()
