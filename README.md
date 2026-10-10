@@ -1,8 +1,11 @@
-# 🗄️ Server Disk Manager - Large File Scanner & TUI
+# 🗄️ Server Disk Manager - Large File Scanner & Docker Image Cleaner
 
-A high-performance, modular, zero-dependency Python tool to inspect server storage disks, locate heavy files (>= 100 MB by default), display formatted summaries, export results to CSV and JSON formats, and manage files interactively via a **Bashtop-inspired TUI with real-time file deletion**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python: 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
 
-All console output, reports, and table headers are in **English**, and the tool features a full **Interactive Menu**, a **Bashtop-style TUI Dashboard**, and **Command-Line (CLI)** capabilities.
+A high-performance, modular, zero-dependency server maintenance tool to inspect storage disks, find heavy files (>= 100 MB by default), export CSV/JSON reports, and reclaim disk space using a **Bashtop-style interactive TUI with live file deletion and Docker image pruning**.
+
+**By default, running `python main.py` directly launches the interactive Bashtop TUI.**
 
 ---
 
@@ -10,27 +13,24 @@ All console output, reports, and table headers are in **English**, and the tool 
 
 ### 🚀 One-Line Temporary Run with `curl` (اجرای موقت بدون نیاز به کلون):
 
-Run directly on any server without cloning or leaving residue:
+Run directly in memory or temporary folder without leaving residue:
 
 #### 🐧 Linux / macOS:
 ```bash
-# Interactive menu with Bashtop TUI (Zero-trace, auto-deletes when done)
+# Directly launches the Bashtop TUI with Docker & Large File cleaner:
 bash <(curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/run.sh)
 
-# Or directly launch the Bashtop TUI with file deletion:
-curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python3 - -t
-
-# Or scan root / for >= 100MB and save report.csv:
+# Or scan root / non-interactively for >= 100MB and save report.csv:
 curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python3 - -p / -s 100 -c /tmp/large_files.csv
 ```
 
 #### 🪟 Windows (PowerShell):
 ```powershell
-# Interactive menu (Temporary run, auto-cleans up)
+# Directly launches the Bashtop TUI (Temporary run, auto-cleans up on exit):
 curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py -o $env:TEMP\dm.py; python $env:TEMP\dm.py; Remove-Item $env:TEMP\dm.py
 
-# Or directly launch the Bashtop TUI with file deletion:
-curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py -o $env:TEMP\dm.py; python $env:TEMP\dm.py -t; Remove-Item $env:TEMP\dm.py
+# Or scan drive C:\ directly and export CSV:
+curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python - -p C:\ -s 100 -c large_files.csv
 ```
 
 ---
@@ -43,24 +43,23 @@ git clone https://github.com/samaelleo/server-disk-manager.git
 # Navigate into project directory
 cd server-disk-manager
 
-# Run Interactive Menu
+# Directly launch the Bashtop-style TUI:
 python main.py
-
-# Or launch Bashtop-Style TUI directly
-python main.py -t
 ```
 
-> 💡 **Requirements**: Python 3.8+ (No external pip dependencies required - pure Python standard library).
+> 💡 **Requirements**: Python 3.8+ (Zero pip dependencies - pure standard library).
 
 ---
 
-## 🖥️ Bashtop-Style Interactive TUI Mode (`Option 1` or `-t`)
+## 🖥️ Bashtop-Style Interactive TUI Mode
 
-An interactive visual dashboard inspired by `bashtop`/`btop` for live disk navigation and disk space reclamation:
+The tool directly launches into an interactive terminal dashboard with two dedicated tabs:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│          🗄️  SERVER DISK MANAGER - INTERACTIVE TUI (BASHTOP MODE)            │
+│                 🗄️  SERVER DISK MANAGER - BASHTOP DASHBOARD                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  [1] 📁 Large Files Disk Scan      [2] 🐳 Docker Images & Storage           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ Storage [C:\] [████████████████████░░░░] 84.2% | Used: 400 GB | Free: 75 GB│
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -73,19 +72,30 @@ An interactive visual dashboard inspired by `bashtop`/`btop` for live disk navig
 │  3    | 2.10 GB     | .mp4   | 2026-09-18 18:40:00 | C:\media\video.mp4     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ Ready. Use arrows to browse, 'd' to delete selected file.                   │
-│ [↑/↓] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan   │
+│ [TAB] Docker  [↑/↓] Move  [d/DEL] Delete File  [o] Details  [/] Search      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 🐳 Tab 2: Docker Images & Storage Manager
+Press **`TAB`** or **`2`** to switch to the Docker management tab:
+- **Automatic Status Detection**: Detects whether Docker daemon is running or stopped.
+- **In-Use vs Unused Tracking**: Queries running and stopped containers to tag each image as `[IN USE]` (green), `[UNUSED]` (yellow), or `[DANGLING]` (red).
+- **Single Image Removal (`d` or `DEL`)**: Safely removes a selected image (`docker rmi`) with confirmation.
+- **Bulk Prune Unused Images (`p`)**: Runs `docker image prune -a -f` to reclaim all unreferenced Docker space with a single confirmation.
+
 ### 🎮 TUI Keybindings:
-- **`↑` / `↓`**: Move selection cursor up / down.
-- **`Page Up` / `Page Down`**: Scroll 15 files up / down.
-- **`d` or `Delete`**: **Delete the selected file** (prompts with safety confirmation dialog `yes`/`y` and updates disk space immediately).
-- **`o` or `ENTER`**: Open full file details (exact size in bytes, read/write permissions, timestamps).
-- **`/`**: Search / Filter files in real-time by keyword or extension (e.g. `.iso`, `backup`). Press `ESC` to clear.
-- **`s`**: Toggle sort modes (Largest first, Smallest first, Name A-Z, Modified date).
-- **`r`**: Re-scan directory and refresh live file list.
-- **`q` or `ESC`**: Exit TUI and return to main menu.
+- **`TAB` / `1` / `2`**: Switch between **📁 Large Files** and **🐳 Docker Images** tabs.
+- **`↑` / `↓` (or `k` / `j` / `w`)**: Move selection cursor up / down.
+- **`Page Up` / `Page Down` (or `←` / `→`)**: Scroll 15 items up / down.
+- **`d` or `Delete`**:
+  - In Files Tab: **Delete selected file** (prompts with safety confirmation dialog `yes`/`y` and updates disk space immediately).
+  - In Docker Tab: **Remove selected Docker image** (`docker rmi`).
+- **`p`**: (Docker Tab) **Prune all unused Docker images** (`docker image prune -a`).
+- **`o` or `ENTER`**: (Files Tab) Open file details (exact bytes, permissions, timestamps).
+- **`/`**: (Files Tab) Search / Filter files in real-time by keyword or extension (e.g. `.iso`, `backup`). Press `ESC` to clear.
+- **`s`**: (Files Tab) Toggle sort order (Largest first, Smallest first, Name A-Z, Date).
+- **`r`**: Re-scan directory and refresh Docker images list.
+- **`q`**: Exit TUI.
 
 ---
 
@@ -96,38 +106,21 @@ server-disk-manager/
 │
 ├── disk_scanner/
 │   ├── __init__.py
-│   ├── scanner.py      # Core iterative directory scanner & stat collector
-│   ├── reporter.py     # Console tables, CSV & JSON exporter (English)
-│   ├── utils.py        # Storage calculations, drive detection & formatters
-│   └── tui.py          # Bashtop-style interactive TUI with file deletion
+│   ├── scanner.py          # Core iterative directory scanner & stat collector
+│   ├── reporter.py         # Console tables, CSV & JSON exporter
+│   ├── utils.py            # Storage calculations, drive detection & formatters
+│   ├── docker_manager.py   # Docker image inspection, unused tracking & pruning
+│   └── tui.py              # Dual-tab Bashtop interactive TUI with file & Docker deletion
 │
 ├── tests/
-│   └── test_scanner.py # Automated unit test suite
+│   └── test_scanner.py     # Automated unit test suite
 │
-├── disk_manager.py     # Self-contained single-file script (for curl runs)
-├── run.sh              # Zero-trace temporary runner for Linux/macOS
-├── main.py             # Main entry point (Interactive Menu + CLI)
+├── disk_manager.py         # Self-contained single-file bundle (for curl runs)
+├── run.sh                  # Zero-trace temporary runner for Linux/macOS
+├── main.py                 # Main entry point (defaults to TUI)
+├── LICENSE                 # MIT License
 ├── .gitignore
 └── README.md
-```
-
----
-
-## 🎮 Main Menu Overview
-
-When running `python main.py`, the interactive menu provides:
-
-```text
-===========================================================================
-                 SERVER DISK MANAGER - MAIN MENU
-===========================================================================
-  [1] Bashtop-Style TUI Dashboard (Live Navigation & File Deletion) ⭐
-  [2] Guided Scan (Configure drive, threshold & export to CSV/JSON)
-  [3] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)
-  [4] View Server Storage Drives & Free Space
-  [5] Scan Current Directory (.)
-  [0] Exit
-===========================================================================
 ```
 
 ---
@@ -136,21 +129,28 @@ When running `python main.py`, the interactive menu provides:
 
 | Flag | Long Option | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-t` | `--tui` | - | Launch interactive Bashtop-style TUI dashboard directly |
+| *(no flags)* | *(default)* | - | **Launches interactive Bashtop TUI directly** |
 | `-p` | `--path` | `.` | Target folder or drive to scan (e.g. `C:\` or `/var`) |
 | `-s` | `--min-size` | `100` | Minimum file size threshold in Megabytes (MB) |
 | `-c` | `--csv` | `None` | Save output to a CSV file (e.g. `report.csv`) |
 | `-j` | `--json` | `None` | Save output and statistics to a JSON file |
 | `-l` | `--limit` | `50` | Maximum rows displayed in console table |
 | `-d` | `--drives` | - | Display storage drives and free space only |
-| `-m` | `--menu` | - | Force launch the interactive menu |
+| `-m` | `--menu` | - | Launch the classic text-based wizard menu instead of TUI |
 | `--follow-symlinks` | `--follow-symlinks` | `False` | Follow symbolic links during traversal |
 
 ---
 
 ## 🧪 Running Unit Tests
 
-Run the test suite to verify file scanning, size calculations, export, and TUI filtering:
+Run the test suite to verify file scanning, size calculations, export, TUI filtering, and Docker management:
 ```bash
 python -m unittest tests/test_scanner.py
 ```
+
+---
+
+## 📜 License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.  
+Copyright (c) 2026 Samael Leo Smith.

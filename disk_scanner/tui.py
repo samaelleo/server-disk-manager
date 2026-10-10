@@ -1,6 +1,7 @@
 """
 Interactive TUI Dashboard (Bashtop / Btop style) for Server Disk Manager.
-Allows real-time inspection, sorting, filtering, and deletion of heavy files.
+Allows real-time inspection, sorting, filtering, and deletion of heavy files,
+as well as inspecting and cleaning unused Docker images.
 Zero external dependencies.
 """
 
@@ -12,6 +13,7 @@ from typing import List, Optional
 
 from .scanner import DiskScanner, FileInfo
 from .utils import format_size, format_timestamp, get_available_drives
+from .docker_manager import DockerManager, DockerImage
 
 # ANSI Color and Styling constants
 C_RESET = "\033[0m"
@@ -40,6 +42,7 @@ def get_key() -> str:
     """
     if os.name == "nt":
         import msvcrt
+
         ch = msvcrt.getch()
 
         # 1. DOS special keys (\x00 or \xe0)
@@ -56,9 +59,8 @@ def get_key() -> str:
             }
             return mapping.get(ch2, "UNKNOWN")
 
-        # 2. ANSI VT100 Escape sequences (\x1b[A, \x1b[B, etc.) in PyCharm / Windows Terminal
+        # 2. ANSI VT100 Escape sequences in PyCharm / Windows Terminal
         if ch == b"\x1b":
-            # Check if more bytes are in buffer (arrow keys send \x1b[A or \x1bOA)
             start_time = time.time()
             while not msvcrt.kbhit() and (time.time() - start_time) < 0.05:
                 time.sleep(0.005)
@@ -92,6 +94,8 @@ def get_key() -> str:
                                 return "PAGE_DOWN"
             return "ESC"
 
+        if ch in (b"\t",):
+            return "TAB"
         if ch in (b"\r", b"\n"):
             return "ENTER"
         if ch in (b"\x08", b"\x7f"):
@@ -102,9 +106,9 @@ def get_key() -> str:
         except Exception:
             return ""
     else:
+        import select
         import termios
         import tty
-        import select
 
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
@@ -139,6 +143,8 @@ def get_key() -> str:
                                 if ch3 == "6":
                                     return "PAGE_DOWN"
                 return "ESC"
+            if ch == "\t":
+                return "TAB"
             if ch in ("\r", "\n"):
                 return "ENTER"
             if ch in ("\x7f", "\x08"):
@@ -146,7 +152,6 @@ def get_key() -> str:
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
 
 
 def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
@@ -171,21 +176,32 @@ def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
 
 class DiskManagerTUI:
     """
-    Bashtop-inspired Terminal User Interface for managing heavy files.
+    Bashtop-inspired Terminal User Interface for managing heavy files and Docker images.
     """
 
-    def __init__(self, target_path: str, min_size_mb: float = 100.0):
+    def __init__(self, target_path: str = ".", min_size_mb: float = 100.0):
         self.target_path = os.path.abspath(target_path)
         self.min_size_mb = min_size_mb
+        self.active_tab = "files"  # "files" or "docker"
+
+        # Files state
         self.files: List[FileInfo] = []
         self.filtered_files: List[FileInfo] = []
         self.selected_idx = 0
         self.scroll_offset = 0
-        self.status_msg = ""
-        self.status_color = C_GREEN
         self.filter_query = ""
         self.sort_mode = "size_desc"  # size_desc, size_asc, name, date
         self.total_freed_bytes = 0
+
+        # Docker state
+        self.docker_images: List[DockerImage] = []
+        self.docker_selected_idx = 0
+        self.docker_scroll_offset = 0
+        self.docker_error = ""
+
+        # Status notification
+        self.status_msg = ""
+        self.status_color = C_GREEN
 
     def load_files(self) -> None:
         """Runs the scan to collect large files."""
@@ -194,6 +210,14 @@ class DiskManagerTUI:
         self.apply_filter_and_sort()
         self.selected_idx = 0
         self.scroll_offset = 0
+
+    def load_docker(self) -> None:
+        """Loads Docker images list."""
+        imgs, err = DockerManager.list_images()
+        self.docker_images = imgs
+        self.docker_error = err
+        self.docker_selected_idx = 0
+        self.docker_scroll_offset = 0
 
     def apply_filter_and_sort(self) -> None:
         """Filters and sorts the loaded files list."""
@@ -214,22 +238,48 @@ class DiskManagerTUI:
         elif self.sort_mode == "date":
             self.filtered_files.sort(key=lambda x: x.modified_time, reverse=True)
 
-        # Bounds check
         if self.selected_idx >= len(self.filtered_files):
             self.selected_idx = max(0, len(self.filtered_files) - 1)
 
     def draw(self) -> None:
-        """Renders the full TUI screen."""
+        """Renders the full TUI screen with tabs."""
         term_cols, term_lines = shutil.get_terminal_size((100, 30))
         lines = []
+        w = max(75, min(term_cols, 130))
 
-        # Header Box
-        w = max(70, min(term_cols, 130))
-        header_title = " 🗄️  SERVER DISK MANAGER - INTERACTIVE TUI (BASHTOP MODE) "
+        # 1. Main Header Box
+        header_title = " 🗄️  SERVER DISK MANAGER - BASHTOP DASHBOARD  "
         lines.append(f"{C_CYAN}┌" + "─" * (w - 2) + f"┐{C_RESET}")
         lines.append(f"{C_CYAN}│{C_BOLD}{C_WHITE}{header_title.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
         lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
 
+        # 2. Interactive Tab Navigation Bar
+        tab1_style = f"{BG_CYAN}{C_BOLD} [1] 📁 Large Files Disk Scan {C_RESET}" if self.active_tab == "files" else f"{C_DIM} [1] 📁 Large Files Disk Scan {C_RESET}"
+        tab2_style = f"{BG_CYAN}{C_BOLD} [2] 🐳 Docker Images & Storage {C_RESET}" if self.active_tab == "docker" else f"{C_DIM} [2] 🐳 Docker Images & Storage {C_RESET}"
+        tab_hint = f"{C_YELLOW}(Press TAB or 1/2 to switch tabs){C_RESET}"
+
+        tab_line = f" {tab1_style}   {tab2_style}    {tab_hint}"
+        # Measure printable width without ANSI
+        clean_tab_line = f"  [1] 📁 Large Files Disk Scan     [2] 🐳 Docker Images & Storage     (Press TAB or 1/2 to switch tabs)"
+        spacing = max(1, w - len(clean_tab_line) - 2)
+        lines.append(f"{C_CYAN}│{C_RESET}{tab_line}{' ' * spacing}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        # Render Active Tab Content
+        if self.active_tab == "files":
+            self._draw_files_tab(lines, w, term_lines)
+        else:
+            self._draw_docker_tab(lines, w, term_lines)
+
+        # Bottom Border
+        lines.append(f"{C_CYAN}└" + "─" * (w - 2) + f"┘{C_RESET}")
+
+        # Write buffer
+        sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
+        sys.stdout.flush()
+
+    def _draw_files_tab(self, lines: List[str], w: int, term_lines: int) -> None:
+        """Renders the Large Files tab."""
         # Drive Storage Info Bar
         drives = get_available_drives()
         if drives:
@@ -249,16 +299,15 @@ class DiskManagerTUI:
         # Scan Meta Info
         total_size_bytes = sum(f.size_bytes for f in self.filtered_files)
         sort_names = {
-            "size_desc": "Size (Largest First)",
-            "size_asc": "Size (Smallest First)",
-            "name": "File Name (A-Z)",
-            "date": "Modified Date (Newest)",
+            "size_desc": "Size (Largest)",
+            "size_asc": "Size (Smallest)",
+            "name": "Name (A-Z)",
+            "date": "Date (Newest)",
         }
-        meta_left = f" Path: {self.target_path} (Threshold: >= {self.min_size_mb:.0f} MB)"
+        meta_left = f" Path: {self.target_path} (>= {self.min_size_mb:.0f} MB)"
         meta_right = f"Files: {len(self.filtered_files):,} | Total: {format_size(total_size_bytes)} | Sort: {sort_names.get(self.sort_mode)} "
         spacing = max(1, w - len(meta_left) - len(meta_right) - 2)
-        meta_line = meta_left + " " * spacing + meta_right
-        lines.append(f"{C_CYAN}│{C_RESET}{C_DIM}{meta_line[:w - 2].ljust(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}│{C_RESET}{C_DIM}{(meta_left + ' ' * spacing + meta_right)[:w - 2].ljust(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
 
         if self.filter_query:
             filter_text = f" Filter Active: '{self.filter_query}' (Press '/' to change, ESC to clear)"
@@ -267,12 +316,7 @@ class DiskManagerTUI:
         lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
 
         # Table Header
-        h_idx = "#"
-        h_size = "SIZE"
-        h_ext = "EXT"
-        h_date = "MODIFIED"
-        h_path = "FILE PATH"
-        table_hdr = f"  {h_idx:<4} | {h_size:<11} | {h_ext:<6} | {h_date:<19} | {h_path}"
+        table_hdr = f"  {'#':<4} | {'SIZE':<11} | {'EXT':<6} | {'MODIFIED':<19} | FILE PATH"
         lines.append(f"{C_CYAN}│{C_BOLD}{C_WHITE}{table_hdr.ljust(w - 2)[:w - 2]}{C_RESET}{C_CYAN}│{C_RESET}")
         lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
 
@@ -281,17 +325,15 @@ class DiskManagerTUI:
         header_height = len(lines)
         table_height = max(5, term_lines - header_height - footer_height)
 
-        # Adjust scroll offset
         if self.selected_idx < self.scroll_offset:
             self.scroll_offset = self.selected_idx
         elif self.selected_idx >= self.scroll_offset + table_height:
             self.scroll_offset = self.selected_idx - table_height + 1
 
-        # Table Rows
         visible_files = self.filtered_files[self.scroll_offset : self.scroll_offset + table_height]
 
         if not self.filtered_files:
-            empty_msg = "[ No files match current criteria or directory is empty ]"
+            empty_msg = "[ No files match current criteria ]"
             lines.append(f"{C_CYAN}│{C_RESET}{empty_msg.center(w - 2)}{C_CYAN}│{C_RESET}")
             for _ in range(table_height - 1):
                 lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
@@ -299,61 +341,127 @@ class DiskManagerTUI:
             for i, f in enumerate(visible_files):
                 actual_idx = self.scroll_offset + i
                 is_selected = actual_idx == self.selected_idx
-
-                num_str = f"{actual_idx + 1}"
-                size_str = f.size_formatted
-                ext_str = f.extension
-                date_str = f.modified_time
                 max_path_w = max(20, w - 52)
-                path_str = f.path
-                if len(path_str) > max_path_w:
-                    path_str = "..." + path_str[-(max_path_w - 3) :]
-
-                row_content = f"  {num_str:<4} | {size_str:<11} | {ext_str:<6} | {date_str:<19} | {path_str}"
+                path_str = f.path if len(f.path) <= max_path_w else "..." + f.path[-(max_path_w - 3):]
+                row_content = f"  {actual_idx + 1:<4} | {f.size_formatted:<11} | {f.extension:<6} | {f.modified_time:<19} | {path_str}"
                 row_padded = row_content.ljust(w - 2)[: w - 2]
-
                 if is_selected:
-                    prefix = f"{C_CYAN}│{C_RESET}{BG_CYAN}{C_BOLD}"
-                    suffix = f"{C_RESET}{C_CYAN}│{C_RESET}"
-                    lines.append(f"{prefix}{row_padded}{suffix}")
+                    lines.append(f"{C_CYAN}│{C_RESET}{BG_CYAN}{C_BOLD}{row_padded}{C_RESET}{C_CYAN}│{C_RESET}")
                 else:
                     lines.append(f"{C_CYAN}│{C_RESET}{row_padded}{C_CYAN}│{C_RESET}")
 
-            # Fill remaining rows if any
             for _ in range(table_height - len(visible_files)):
                 lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
 
-        # Table Bottom Border
         lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
 
         # Status Notification Line
         status_line = self.status_msg if self.status_msg else "Ready. Use arrows to browse, 'd' to delete selected file."
         if self.total_freed_bytes > 0:
-            freed_str = f"[Total Space Freed: {format_size(self.total_freed_bytes)}] "
-            status_line = freed_str + status_line
+            status_line = f"[Freed: {format_size(self.total_freed_bytes)}] " + status_line
         lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
 
         # Controls & Hotkeys Footer
-        hotkeys = " [↑/↓ or k/j] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
+        hotkeys = " [TAB] Docker  [↑/↓] Move  [d/DEL] Delete File  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
         lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
-        lines.append(f"{C_CYAN}└" + "─" * (w - 2) + f"┘{C_RESET}")
 
+    def _draw_docker_tab(self, lines: List[str], w: int, term_lines: int) -> None:
+        """Renders the Docker Images tab."""
+        if self.docker_error:
+            # Docker not running or error
+            err_box = f" [!] Docker Status: {self.docker_error} "
+            lines.append(f"{C_CYAN}│{C_RESET}{C_RED}{err_box.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+            lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+            hint = "Please start Docker Desktop or the Docker daemon, then press [r] to refresh."
+            lines.append(f"{C_CYAN}│{C_RESET}{hint.center(w - 2)}{C_CYAN}│{C_RESET}")
+            for _ in range(max(6, term_lines - 16)):
+                lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
+            lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+            hotkeys = " [TAB] Switch to Files  [r] Retry Docker Check  [q] Quit "
+            lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+            return
 
-        # Render buffer to terminal
-        sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
-        sys.stdout.flush()
+        total_docker_bytes = sum(img.size_bytes for img in self.docker_images)
+        unused_count = sum(1 for img in self.docker_images if not img.in_use)
+        dangling_count = sum(1 for img in self.docker_images if img.is_dangling)
+
+        meta_left = f" Docker Images: {len(self.docker_images)} (Total: {format_size(total_docker_bytes)})"
+        meta_right = f"Unused Images: {unused_count} | Dangling: {dangling_count} "
+        spacing = max(1, w - len(meta_left) - len(meta_right) - 2)
+        lines.append(f"{C_CYAN}│{C_RESET}{C_DIM}{(meta_left + ' ' * spacing + meta_right)[:w - 2].ljust(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        # Docker Table Header
+        table_hdr = f"  {'#':<4} | {'STATUS':<10} | {'REPOSITORY:TAG':<35} | {'IMAGE ID':<14} | {'SIZE':<10} | CREATED"
+        lines.append(f"{C_CYAN}│{C_BOLD}{C_WHITE}{table_hdr.ljust(w - 2)[:w - 2]}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        footer_height = 5
+        header_height = len(lines)
+        table_height = max(5, term_lines - header_height - footer_height)
+
+        if self.docker_selected_idx < self.docker_scroll_offset:
+            self.docker_scroll_offset = self.docker_selected_idx
+        elif self.docker_selected_idx >= self.docker_scroll_offset + table_height:
+            self.docker_scroll_offset = self.docker_selected_idx - table_height + 1
+
+        visible_imgs = self.docker_images[self.docker_scroll_offset : self.docker_scroll_offset + table_height]
+
+        if not self.docker_images:
+            empty_msg = "[ No Docker images found on this server ]"
+            lines.append(f"{C_CYAN}│{C_RESET}{empty_msg.center(w - 2)}{C_CYAN}│{C_RESET}")
+            for _ in range(table_height - 1):
+                lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
+        else:
+            for i, img in enumerate(visible_imgs):
+                actual_idx = self.docker_scroll_offset + i
+                is_selected = actual_idx == self.docker_selected_idx
+
+                if img.in_use:
+                    status_lbl = f"{C_GREEN}[IN USE]{C_RESET}"
+                    status_plain = "[IN USE]  "
+                elif img.is_dangling:
+                    status_lbl = f"{C_RED}[DANGLING]{C_RESET}"
+                    status_plain = "[DANGLING]"
+                else:
+                    status_lbl = f"{C_YELLOW}[UNUSED]{C_RESET}"
+                    status_plain = "[UNUSED]  "
+
+                full_repo = img.full_name
+                if len(full_repo) > 33:
+                    full_repo = full_repo[:30] + "..."
+
+                row_plain = f"  {actual_idx + 1:<4} | {status_plain:<10} | {full_repo:<35} | {img.image_id[:12]:<14} | {img.size_str:<10} | {img.created}"
+                row_padded = row_plain.ljust(w - 2)[: w - 2]
+
+                if is_selected:
+                    lines.append(f"{C_CYAN}│{C_RESET}{BG_CYAN}{C_BOLD}{row_padded}{C_RESET}{C_CYAN}│{C_RESET}")
+                else:
+                    # Colorized status version
+                    row_color = f"  {actual_idx + 1:<4} | {status_lbl:<19} | {full_repo:<35} | {img.image_id[:12]:<14} | {img.size_str:<10} | {img.created}"
+                    lines.append(f"{C_CYAN}│{C_RESET}{row_color.ljust(w + 7)[:w + 7]}{C_CYAN}│{C_RESET}")
+
+            for _ in range(table_height - len(visible_imgs)):
+                lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
+
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+        status_line = self.status_msg if self.status_msg else "Use 'd' to delete selected image, 'p' to prune all unused images."
+        lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
+
+        hotkeys = " [TAB] Files  [↑/↓] Move  [d/DEL] Remove Image  [p] Prune Unused  [r] Refresh  [q] Quit "
+        lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
 
     def show_details(self) -> None:
         """Displays full details of the selected file."""
         if not self.filtered_files:
             return
         f = self.filtered_files[self.selected_idx]
-        term_cols, term_lines = shutil.get_terminal_size((80, 24))
+        term_cols, _ = shutil.get_terminal_size((80, 24))
         w = min(term_cols - 4, 90)
 
         sys.stdout.write("\033[2J\033[H")
         print("\n" + "=" * w)
-        print(f"{C_BOLD}                       FILE DETAILS{C_RESET}".center(w))
+        print(f"{C_BOLD}FILE DETAILS{C_RESET}".center(w))
         print("=" * w)
         print(f"{C_CYAN}Path         :{C_RESET} {f.path}")
         print(f"{C_CYAN}Exact Bytes  :{C_RESET} {f.size_bytes:,} bytes")
@@ -363,10 +471,10 @@ class DiskManagerTUI:
         print(f"{C_CYAN}Readable     :{C_RESET} {'Yes' if os.access(f.path, os.R_OK) else 'No'}")
         print(f"{C_CYAN}Writable     :{C_RESET} {'Yes' if os.access(f.path, os.W_OK) else 'No'}")
         print("=" * w)
-        print(f"\n{C_YELLOW}Press any key to return to dashboard...{C_RESET}")
+        print(f"\n{C_YELLOW}Press any key to return...{C_RESET}")
         get_key()
 
-    def delete_selected(self) -> None:
+    def delete_selected_file(self) -> None:
         """Prompts for confirmation and deletes the selected file."""
         if not self.filtered_files:
             return
@@ -375,7 +483,6 @@ class DiskManagerTUI:
         term_cols, _ = shutil.get_terminal_size((80, 24))
         w = min(term_cols - 4, 95)
 
-        # Clear screen and display danger box
         sys.stdout.write("\033[2J\033[H")
         print("\n" + f"{C_RED}╔" + "═" * (w - 2) + f"╗{C_RESET}")
         print(f"{C_RED}║{C_BOLD}{C_WHITE}{'⚠️  CONFIRM FILE DELETION  ⚠️'.center(w - 2)}{C_RESET}{C_RED}║{C_RESET}")
@@ -387,7 +494,7 @@ class DiskManagerTUI:
         print(f"{C_RED}║{C_RESET}{C_BOLD}{C_RED} CAUTION: This will permanently erase the file from disk! {C_RESET}".center(w + 14) + f"{C_RED}║{C_RESET}")
         print(f"{C_RED}╚" + "═" * (w - 2) + f"╝{C_RESET}\n")
 
-        sys.stdout.write(f"Type '{C_BOLD}yes{C_RESET}' or press '{C_BOLD}y{C_RESET}' to confirm deletion (anything else cancels): ")
+        sys.stdout.write(f"Type '{C_BOLD}yes{C_RESET}' or press '{C_BOLD}y{C_RESET}' to confirm deletion: ")
         sys.stdout.flush()
 
         ans = input().strip().lower()
@@ -396,37 +503,96 @@ class DiskManagerTUI:
             try:
                 os.remove(f.path)
                 self.total_freed_bytes += f.size_bytes
-                self.status_msg = f"[DELETED] Successfully deleted '{os.path.basename(f.path)}' (Freed: {f.size_formatted})"
+                self.status_msg = f"[DELETED] Deleted '{os.path.basename(f.path)}' (Freed: {f.size_formatted})"
                 self.status_color = C_GREEN
-
-                # Remove from lists
                 self.files = [item for item in self.files if item.path != f.path]
                 self.apply_filter_and_sort()
             except PermissionError:
-                self.status_msg = f"[ERROR] Permission Denied: Cannot delete '{os.path.basename(f.path)}'. Run as Administrator/root."
+                self.status_msg = f"[ERROR] Permission Denied: Cannot delete '{os.path.basename(f.path)}'."
                 self.status_color = C_RED
-            except FileNotFoundError:
-                self.status_msg = f"[WARN] File was already removed by another process."
-                self.status_color = C_YELLOW
-                self.files = [item for item in self.files if item.path != f.path]
-                self.apply_filter_and_sort()
             except Exception as e:
                 self.status_msg = f"[ERROR] Could not delete file: {str(e)}"
                 self.status_color = C_RED
         else:
-            self.status_msg = "[CANCELLED] Deletion cancelled by user."
+            self.status_msg = "[CANCELLED] Deletion cancelled."
+            self.status_color = C_YELLOW
+
+    def delete_selected_docker_image(self) -> None:
+        """Prompts for confirmation and deletes the selected Docker image."""
+        if not self.docker_images:
+            return
+
+        img = self.docker_images[self.docker_selected_idx]
+        term_cols, _ = shutil.get_terminal_size((80, 24))
+        w = min(term_cols - 4, 95)
+
+        sys.stdout.write("\033[2J\033[H")
+        print("\n" + f"{C_RED}╔" + "═" * (w - 2) + f"╗{C_RESET}")
+        print(f"{C_RED}║{C_BOLD}{C_WHITE}{'⚠️  CONFIRM DOCKER IMAGE REMOVAL  ⚠️'.center(w - 2)}{C_RESET}{C_RED}║{C_RESET}")
+        print(f"{C_RED}╠" + "═" * (w - 2) + f"╣{C_RESET}")
+        print(f"{C_RED}║{C_RESET} Repository:Tag : {C_BOLD}{img.full_name[:w - 20]}{C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET} Image ID       : {C_CYAN}{img.image_id}{C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET} Size           : {C_YELLOW}{img.size_str}{C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        status_txt = "IN USE BY CONTAINERS" if img.in_use else "UNUSED (Safe to delete)"
+        color_st = C_RED if img.in_use else C_GREEN
+        print(f"{C_RED}║{C_RESET} Status         : {color_st}{status_txt}{C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET}" + " " * (w - 2) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET}{C_BOLD}{C_RED} CAUTION: This will delete the Docker image from local storage! {C_RESET}".center(w + 14) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}╚" + "═" * (w - 2) + f"╝{C_RESET}\n")
+
+        sys.stdout.write(f"Type '{C_BOLD}yes{C_RESET}' or press '{C_BOLD}y{C_RESET}' to remove this image: ")
+        sys.stdout.flush()
+
+        ans = input().strip().lower()
+        if ans in ("y", "yes"):
+            ok, msg = DockerManager.remove_image(img.image_id, force=img.in_use)
+            if ok:
+                self.status_msg = f"[DOCKER] Removed image '{img.full_name}'"
+                self.status_color = C_GREEN
+                self.load_docker()
+            else:
+                self.status_msg = f"[ERROR] Failed to remove image: {msg[:60]}"
+                self.status_color = C_RED
+        else:
+            self.status_msg = "[CANCELLED] Docker image removal cancelled."
+            self.status_color = C_YELLOW
+
+    def prune_docker_images(self) -> None:
+        """Prompts for confirmation and prunes all unused Docker images."""
+        term_cols, _ = shutil.get_terminal_size((80, 24))
+        w = min(term_cols - 4, 95)
+
+        sys.stdout.write("\033[2J\033[H")
+        print("\n" + f"{C_YELLOW}╔" + "═" * (w - 2) + f"╗{C_RESET}")
+        print(f"{C_YELLOW}║{C_BOLD}{C_WHITE}{'⚠️  PRUNE ALL UNUSED DOCKER IMAGES  ⚠️'.center(w - 2)}{C_RESET}{C_YELLOW}║{C_RESET}")
+        print(f"{C_YELLOW}╠" + "═" * (w - 2) + f"╣{C_RESET}")
+        print(f"{C_YELLOW}║{C_RESET} This command runs: {C_BOLD}docker image prune -a -f{C_RESET}".ljust(w + 8) + f"{C_YELLOW}║{C_RESET}")
+        print(f"{C_YELLOW}║{C_RESET} It will delete ALL images not associated with a container.".ljust(w - 1) + f"{C_YELLOW}║{C_RESET}")
+        print(f"{C_YELLOW}║{C_RESET} Active containers and their images will NOT be harmed.".ljust(w - 1) + f"{C_YELLOW}║{C_RESET}")
+        print(f"{C_YELLOW}╚" + "═" * (w - 2) + f"╝{C_RESET}\n")
+
+        sys.stdout.write(f"Type '{C_BOLD}yes{C_RESET}' or press '{C_BOLD}y{C_RESET}' to prune unused images: ")
+        sys.stdout.flush()
+
+        ans = input().strip().lower()
+        if ans in ("y", "yes"):
+            ok, msg = DockerManager.prune_unused_images(all_unused=True)
+            if ok:
+                self.status_msg = f"[DOCKER PRUNE] {msg}"
+                self.status_color = C_GREEN
+                self.load_docker()
+            else:
+                self.status_msg = f"[ERROR] Prune failed: {msg[:60]}"
+                self.status_color = C_RED
+        else:
+            self.status_msg = "[CANCELLED] Prune cancelled."
             self.status_color = C_YELLOW
 
     def prompt_filter(self) -> None:
         """Prompts for a filter query."""
         sys.stdout.write("\033[H\033[2J")
-        print("\n" + "=" * 60)
-        print("                   FILTER FILES")
-        print("=" * 60)
-        print("Enter keyword or extension to filter (e.g. '.iso', 'backup', 'log'):")
-        print("Leave empty to clear filter.")
-        print("-" * 60)
-        sys.stdout.write("Search query: ")
+        print("\nEnter keyword or extension to filter (empty to clear):")
+        sys.stdout.write("Search: ")
         sys.stdout.flush()
         try:
             query = input().strip()
@@ -450,13 +616,13 @@ class DiskManagerTUI:
 
     def run(self) -> None:
         """Main TUI event loop."""
-        # Hide cursor & clear screen
         sys.stdout.write("\033[?25l\033[2J")
         sys.stdout.flush()
 
         try:
             print(f"\n[SCANNING] Initializing scan for {self.target_path} (>= {self.min_size_mb:.0f} MB)...")
             self.load_files()
+            self.load_docker()
 
             while True:
                 self.draw()
@@ -472,34 +638,69 @@ class DiskManagerTUI:
                         self.status_color = C_CYAN
                     else:
                         break
+                elif key in ("TAB", "tab"):
+                    # Toggle between tabs
+                    self.active_tab = "docker" if self.active_tab == "files" else "files"
+                    self.status_msg = f"Switched to {self.active_tab.upper()} tab."
+                    self.status_color = C_CYAN
+                elif key == "1":
+                    self.active_tab = "files"
+                    self.status_msg = "Switched to Large Files tab."
+                    self.status_color = C_CYAN
+                elif key == "2":
+                    self.active_tab = "docker"
+                    self.status_msg = "Switched to Docker Images tab."
+                    self.status_color = C_CYAN
                 elif key in ("UP", "k", "K", "w", "W"):
-                    if self.selected_idx > 0:
-                        self.selected_idx -= 1
+                    if self.active_tab == "files":
+                        if self.selected_idx > 0:
+                            self.selected_idx -= 1
+                    else:
+                        if self.docker_selected_idx > 0:
+                            self.docker_selected_idx -= 1
                 elif key in ("DOWN", "j", "J"):
-                    if self.selected_idx < len(self.filtered_files) - 1:
-                        self.selected_idx += 1
+                    if self.active_tab == "files":
+                        if self.selected_idx < len(self.filtered_files) - 1:
+                            self.selected_idx += 1
+                    else:
+                        if self.docker_selected_idx < len(self.docker_images) - 1:
+                            self.docker_selected_idx += 1
                 elif key in ("PAGE_UP", "LEFT"):
-                    self.selected_idx = max(0, self.selected_idx - 15)
+                    if self.active_tab == "files":
+                        self.selected_idx = max(0, self.selected_idx - 15)
+                    else:
+                        self.docker_selected_idx = max(0, self.docker_selected_idx - 15)
                 elif key in ("PAGE_DOWN", "RIGHT"):
-                    self.selected_idx = min(len(self.filtered_files) - 1, self.selected_idx + 15)
+                    if self.active_tab == "files":
+                        self.selected_idx = min(len(self.filtered_files) - 1, self.selected_idx + 15)
+                    else:
+                        self.docker_selected_idx = min(len(self.docker_images) - 1, self.docker_selected_idx + 15)
                 elif key in ("d", "D", "DELETE"):
-                    self.delete_selected()
+                    if self.active_tab == "files":
+                        self.delete_selected_file()
+                    else:
+                        self.delete_selected_docker_image()
+                elif key in ("p", "P"):
+                    if self.active_tab == "docker":
+                        self.prune_docker_images()
                 elif key in ("o", "O", "ENTER"):
-                    self.show_details()
+                    if self.active_tab == "files":
+                        self.show_details()
                 elif key == "/":
-
-                    self.prompt_filter()
+                    if self.active_tab == "files":
+                        self.prompt_filter()
                 elif key in ("s", "S"):
-                    self.toggle_sort()
+                    if self.active_tab == "files":
+                        self.toggle_sort()
                 elif key in ("r", "R"):
-                    self.status_msg = "[RESCANNING] Refreshing file list..."
+                    self.status_msg = "[REFRESHING] Scanning files and Docker..."
                     self.status_color = C_YELLOW
                     self.draw()
                     self.load_files()
-                    self.status_msg = "[REFRESHED] Scan complete."
+                    self.load_docker()
+                    self.status_msg = "[REFRESHED] Refresh complete."
                     self.status_color = C_GREEN
         finally:
-            # Show cursor & clear screen on exit
             sys.stdout.write("\033[?25h\033[2J\033[H")
             sys.stdout.flush()
 

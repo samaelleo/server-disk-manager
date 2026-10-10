@@ -347,16 +347,15 @@ def main():
         Reporter.print_drives(drives)
         sys.exit(0)
 
-    # If --tui requested directly via CLI
-    if args.tui:
-        target = args.path if args.path else "."
-        launch_tui(target_path=target, min_size_mb=args.min_size)
+    # If --menu requested explicitly
+    if args.menu:
+        interactive_menu()
         sys.exit(0)
 
-    # If specific CLI parameters are provided, execute directly
-    cli_flags_used = any([args.path, args.csv, args.json, "--min-size" in sys.argv, "-s" in sys.argv])
+    # If export flags or limit are specified, run non-interactive CLI scan
+    headless_export = any([args.csv, args.json, "--limit" in sys.argv, "-l" in sys.argv])
 
-    if cli_flags_used and not args.menu:
+    if headless_export:
         target = args.path if args.path else "."
         run_scan(
             target_path=target,
@@ -367,10 +366,11 @@ def main():
             follow_symlinks=args.follow_symlinks,
         )
     else:
-        # Launch Interactive Menu
-        interactive_menu()
-
+        # DEFAULT: Launch interactive Bashtop-style TUI directly!
+        target = args.path if args.path else "."
+        launch_tui(target_path=target, min_size_mb=args.min_size)
 
 
 if __name__ == "__main__":
     main()
+

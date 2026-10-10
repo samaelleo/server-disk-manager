@@ -101,7 +101,21 @@ class TestDiskScanner(unittest.TestCase):
         gauge = make_gauge_bar(50, 100, length=10)
         self.assertIn("50.0%", gauge)
 
+    def test_docker_manager(self):
+        from disk_scanner.docker_manager import parse_size_to_bytes, DockerManager
+
+        self.assertEqual(parse_size_to_bytes("1.5GB"), 1610612736)
+        self.assertEqual(parse_size_to_bytes("500MB"), 524288000)
+        self.assertEqual(parse_size_to_bytes("100KB"), 102400)
+        self.assertEqual(parse_size_to_bytes("0B"), 0)
+
+        # Ensure is_docker_running returns a tuple without crashing
+        running, msg = DockerManager.is_docker_running()
+        self.assertIsInstance(running, bool)
+        self.assertIsInstance(msg, str)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
