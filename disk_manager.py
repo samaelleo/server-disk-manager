@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Server Disk Manager - Standalone Single-File Version
+Server Disk Manager - Standalone Single-File Version (With Bashtop-Style TUI & File Deletion)
 Zero external dependencies. Ideal for one-line curl/wget temporary execution on servers.
 """
 
@@ -301,26 +301,350 @@ class Reporter:
         return abs_path
 
 
+# --- TUI / BASHTOP IMPLEMENTATION ---
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_DIM = "\033[2m"
+C_CYAN = "\033[36m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_RED = "\033[31m"
+C_WHITE = "\033[37m"
+BG_CYAN = "\033[46m\033[30m"
+
+
+def get_key() -> str:
+    if os.name == "nt":
+        import msvcrt
+        ch = msvcrt.getch()
+        if ch in (b"\x00", b"\xe0"):
+            ch2 = msvcrt.getch()
+            mapping = {
+                b"H": "UP",
+                b"P": "DOWN",
+                b"K": "LEFT",
+                b"M": "RIGHT",
+                b"S": "DELETE",
+                b"I": "PAGE_UP",
+                b"Q": "PAGE_DOWN",
+            }
+            return mapping.get(ch2, "SPECIAL")
+        if ch == b"\r":
+            return "ENTER"
+        if ch == b"\x1b":
+            return "ESC"
+        if ch == b"\x08":
+            return "BACKSPACE"
+        try:
+            return ch.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    else:
+        import termios
+        import tty
+        import select
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r:
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == "[":
+                        ch3 = sys.stdin.read(1)
+                        mapping = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT"}
+                        if ch3 in mapping:
+                            return mapping[ch3]
+                        if ch3 == "3":
+                            sys.stdin.read(1)
+                            return "DELETE"
+                        if ch3 == "5":
+                            sys.stdin.read(1)
+                            return "PAGE_UP"
+                        if ch3 == "6":
+                            sys.stdin.read(1)
+                            return "PAGE_DOWN"
+                return "ESC"
+            if ch in ("\r", "\n"):
+                return "ENTER"
+            if ch in ("\x7f", "\x08"):
+                return "BACKSPACE"
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def make_gauge_bar(used_bytes: int, total_bytes: int, length: int = 24) -> str:
+    if total_bytes <= 0:
+        return "[ " + "░" * length + " ]"
+    pct = min(1.0, max(0.0, used_bytes / total_bytes))
+    fill_len = int(pct * length)
+    empty_len = length - fill_len
+    color = C_GREEN if pct < 0.70 else (C_YELLOW if pct < 0.90 else C_RED)
+    return f"[{color}{'█' * fill_len}{C_RESET}{C_DIM}{'░' * empty_len}{C_RESET}] {color}{pct * 100:.1f}%{C_RESET}"
+
+
+class DiskManagerTUI:
+    def __init__(self, target_path: str, min_size_mb: float = 100.0):
+        self.target_path = os.path.abspath(target_path)
+        self.min_size_mb = min_size_mb
+        self.files: List[FileInfo] = []
+        self.filtered_files: List[FileInfo] = []
+        self.selected_idx = 0
+        self.scroll_offset = 0
+        self.status_msg = ""
+        self.status_color = C_GREEN
+        self.filter_query = ""
+        self.sort_mode = "size_desc"
+        self.total_freed_bytes = 0
+
+    def load_files(self) -> None:
+        scanner = DiskScanner(target_path=self.target_path, min_size_mb=self.min_size_mb)
+        self.files = scanner.scan()
+        self.apply_filter_and_sort()
+        self.selected_idx = 0
+        self.scroll_offset = 0
+
+    def apply_filter_and_sort(self) -> None:
+        if self.filter_query:
+            q = self.filter_query.lower()
+            self.filtered_files = [f for f in self.files if q in f.path.lower() or q in f.extension.lower()]
+        else:
+            self.filtered_files = list(self.files)
+
+        if self.sort_mode == "size_desc":
+            self.filtered_files.sort(key=lambda x: x.size_bytes, reverse=True)
+        elif self.sort_mode == "size_asc":
+            self.filtered_files.sort(key=lambda x: x.size_bytes)
+        elif self.sort_mode == "name":
+            self.filtered_files.sort(key=lambda x: os.path.basename(x.path).lower())
+        elif self.sort_mode == "date":
+            self.filtered_files.sort(key=lambda x: x.modified_time, reverse=True)
+
+        if self.selected_idx >= len(self.filtered_files):
+            self.selected_idx = max(0, len(self.filtered_files) - 1)
+
+    def draw(self) -> None:
+        term_cols, term_lines = shutil.get_terminal_size((100, 30))
+        lines = []
+        w = max(70, min(term_cols, 130))
+
+        header_title = " 🗄️  SERVER DISK MANAGER - INTERACTIVE TUI (BASHTOP MODE) "
+        lines.append(f"{C_CYAN}┌" + "─" * (w - 2) + f"┐{C_RESET}")
+        lines.append(f"{C_CYAN}│{C_BOLD}{C_WHITE}{header_title.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        drives = get_available_drives()
+        if drives:
+            d = drives[0]
+            for candidate in drives:
+                if self.target_path.startswith(candidate["path"]):
+                    d = candidate
+                    break
+            gauge = make_gauge_bar(d["used"], d["total"], length=max(15, w // 5))
+            storage_text = f" Storage [{d['path']}] {gauge} | Used: {format_size(d['used'])} | Free: {C_GREEN}{format_size(d['free'])}{C_RESET} | Total: {format_size(d['total'])}"
+            lines.append(f"{C_CYAN}│{C_RESET} {storage_text.ljust(w - 4)[:w - 4]} {C_CYAN}│{C_RESET}")
+            lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        total_size_bytes = sum(f.size_bytes for f in self.filtered_files)
+        sort_names = {"size_desc": "Size (Largest)", "size_asc": "Size (Smallest)", "name": "Name (A-Z)", "date": "Date"}
+        meta_left = f" Path: {self.target_path} (>= {self.min_size_mb:.0f} MB)"
+        meta_right = f"Files: {len(self.filtered_files):,} | Total: {format_size(total_size_bytes)} | Sort: {sort_names.get(self.sort_mode)} "
+        spacing = max(1, w - len(meta_left) - len(meta_right) - 2)
+        lines.append(f"{C_CYAN}│{C_RESET}{C_DIM}{(meta_left + ' ' * spacing + meta_right)[:w - 2].ljust(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+
+        if self.filter_query:
+            lines.append(f"{C_CYAN}│{C_RESET}{C_YELLOW}{f' Filter: {self.filter_query}'.ljust(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+        table_hdr = f"  {'#':<4} | {'SIZE':<11} | {'EXT':<6} | {'MODIFIED':<19} | FILE PATH"
+        lines.append(f"{C_CYAN}│{C_BOLD}{C_WHITE}{table_hdr.ljust(w - 2)[:w - 2]}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+
+        footer_height = 5
+        header_height = len(lines)
+        table_height = max(5, term_lines - header_height - footer_height)
+
+        if self.selected_idx < self.scroll_offset:
+            self.scroll_offset = self.selected_idx
+        elif self.selected_idx >= self.scroll_offset + table_height:
+            self.scroll_offset = self.selected_idx - table_height + 1
+
+        visible_files = self.filtered_files[self.scroll_offset : self.scroll_offset + table_height]
+
+        if not self.filtered_files:
+            empty_msg = "[ No files match current criteria ]"
+            lines.append(f"{C_CYAN}│{C_RESET}{empty_msg.center(w - 2)}{C_CYAN}│{C_RESET}")
+            for _ in range(table_height - 1):
+                lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
+        else:
+            for i, f in enumerate(visible_files):
+                actual_idx = self.scroll_offset + i
+                is_selected = actual_idx == self.selected_idx
+                max_path_w = max(20, w - 52)
+                path_str = f.path if len(f.path) <= max_path_w else "..." + f.path[-(max_path_w - 3):]
+                row_content = f"  {actual_idx + 1:<4} | {f.size_formatted:<11} | {f.extension:<6} | {f.modified_time:<19} | {path_str}"
+                row_padded = row_content.ljust(w - 2)[: w - 2]
+                if is_selected:
+                    lines.append(f"{C_CYAN}│{C_RESET}{BG_CYAN}{C_BOLD}{row_padded}{C_RESET}{C_CYAN}│{C_RESET}")
+                else:
+                    lines.append(f"{C_CYAN}│{C_RESET}{row_padded}{C_CYAN}│{C_RESET}")
+
+            for _ in range(table_height - len(visible_files)):
+                lines.append(f"{C_CYAN}│{C_RESET}" + " " * (w - 2) + f"{C_CYAN}│{C_RESET}")
+
+        lines.append(f"{C_CYAN}├" + "─" * (w - 2) + f"┤{C_RESET}")
+        status_line = self.status_msg if self.status_msg else "Ready. Use arrows to browse, 'd' to delete selected file."
+        if self.total_freed_bytes > 0:
+            status_line = f"[Freed: {format_size(self.total_freed_bytes)}] " + status_line
+        lines.append(f"{C_CYAN}│{C_RESET} {self.status_color}{status_line.ljust(w - 4)[:w - 4]}{C_RESET} {C_CYAN}│{C_RESET}")
+
+        hotkeys = " [↑/↓] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan  [q] Quit "
+        lines.append(f"{C_CYAN}│{C_BOLD}{C_YELLOW}{hotkeys.center(w - 2)}{C_RESET}{C_CYAN}│{C_RESET}")
+        lines.append(f"{C_CYAN}└" + "─" * (w - 2) + f"┘{C_RESET}")
+
+        sys.stdout.write("\033[H" + "\n".join(lines) + "\033[J")
+        sys.stdout.flush()
+
+    def show_details(self) -> None:
+        if not self.filtered_files:
+            return
+        f = self.filtered_files[self.selected_idx]
+        term_cols, _ = shutil.get_terminal_size((80, 24))
+        w = min(term_cols - 4, 90)
+        sys.stdout.write("\033[2J\033[H")
+        print("\n" + "=" * w)
+        print(f"{C_BOLD}FILE DETAILS{C_RESET}".center(w))
+        print("=" * w)
+        print(f"{C_CYAN}Path         :{C_RESET} {f.path}")
+        print(f"{C_CYAN}Exact Bytes  :{C_RESET} {f.size_bytes:,} bytes")
+        print(f"{C_CYAN}Formatted    :{C_RESET} {f.size_formatted}")
+        print(f"{C_CYAN}Extension    :{C_RESET} {f.extension}")
+        print(f"{C_CYAN}Last Modified:{C_RESET} {f.modified_time}")
+        print("=" * w)
+        print(f"\n{C_YELLOW}Press any key to return...{C_RESET}")
+        get_key()
+
+    def delete_selected(self) -> None:
+        if not self.filtered_files:
+            return
+        f = self.filtered_files[self.selected_idx]
+        term_cols, _ = shutil.get_terminal_size((80, 24))
+        w = min(term_cols - 4, 95)
+        sys.stdout.write("\033[2J\033[H")
+        print("\n" + f"{C_RED}╔" + "═" * (w - 2) + f"╗{C_RESET}")
+        print(f"{C_RED}║{C_BOLD}{C_WHITE}{'⚠️  CONFIRM FILE DELETION  ⚠️'.center(w - 2)}{C_RESET}{C_RED}║{C_RESET}")
+        print(f"{C_RED}╠" + "═" * (w - 2) + f"╣{C_RESET}")
+        print(f"{C_RED}║{C_RESET} Target File : {C_BOLD}{f.path[:w - 18]}{C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET} File Size   : {C_YELLOW}{f.size_formatted} ({f.size_bytes:,} bytes){C_RESET}".ljust(w + 8) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET} Last Modified: {f.modified_time}".ljust(w - 1) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}║{C_RESET}{C_BOLD}{C_RED} CAUTION: This will permanently erase the file from disk! {C_RESET}".center(w + 14) + f"{C_RED}║{C_RESET}")
+        print(f"{C_RED}╚" + "═" * (w - 2) + f"╝{C_RESET}\n")
+
+        sys.stdout.write(f"Type '{C_BOLD}yes{C_RESET}' or press '{C_BOLD}y{C_RESET}' to confirm deletion: ")
+        sys.stdout.flush()
+        ans = input().strip().lower()
+
+        if ans in ("y", "yes"):
+            try:
+                os.remove(f.path)
+                self.total_freed_bytes += f.size_bytes
+                self.status_msg = f"[DELETED] Deleted '{os.path.basename(f.path)}' (Freed: {f.size_formatted})"
+                self.status_color = C_GREEN
+                self.files = [item for item in self.files if item.path != f.path]
+                self.apply_filter_and_sort()
+            except PermissionError:
+                self.status_msg = f"[ERROR] Permission Denied: Cannot delete '{os.path.basename(f.path)}'."
+                self.status_color = C_RED
+            except Exception as e:
+                self.status_msg = f"[ERROR] Could not delete file: {str(e)}"
+                self.status_color = C_RED
+        else:
+            self.status_msg = "[CANCELLED] Deletion cancelled."
+            self.status_color = C_YELLOW
+
+    def prompt_filter(self) -> None:
+        sys.stdout.write("\033[H\033[2J")
+        print("\nEnter keyword or extension to filter (empty to clear):")
+        sys.stdout.write("Search: ")
+        sys.stdout.flush()
+        try:
+            query = input().strip()
+            self.filter_query = query
+            self.apply_filter_and_sort()
+            self.selected_idx = 0
+            self.scroll_offset = 0
+            self.status_msg = f"Filter set to: '{query}'" if query else "Filter cleared."
+            self.status_color = C_CYAN
+        except Exception:
+            pass
+
+    def toggle_sort(self) -> None:
+        modes = ["size_desc", "size_asc", "name", "date"]
+        curr_idx = modes.index(self.sort_mode)
+        self.sort_mode = modes[(curr_idx + 1) % len(modes)]
+        self.apply_filter_and_sort()
+        self.status_msg = f"Sort mode changed to: {self.sort_mode}"
+        self.status_color = C_CYAN
+
+    def run(self) -> None:
+        sys.stdout.write("\033[?25l\033[2J")
+        sys.stdout.flush()
+        try:
+            print(f"\n[SCANNING] Initializing scan for {self.target_path} (>= {self.min_size_mb:.0f} MB)...")
+            self.load_files()
+            while True:
+                self.draw()
+                key = get_key()
+                if key in ("q", "Q", "ESC"):
+                    break
+                elif key == "UP":
+                    if self.selected_idx > 0:
+                        self.selected_idx -= 1
+                elif key == "DOWN":
+                    if self.selected_idx < len(self.filtered_files) - 1:
+                        self.selected_idx += 1
+                elif key == "PAGE_UP":
+                    self.selected_idx = max(0, self.selected_idx - 15)
+                elif key == "PAGE_DOWN":
+                    self.selected_idx = min(len(self.filtered_files) - 1, self.selected_idx + 15)
+                elif key in ("d", "D", "DELETE"):
+                    self.delete_selected()
+                elif key in ("o", "O", "ENTER"):
+                    self.show_details()
+                elif key == "/":
+                    self.prompt_filter()
+                elif key in ("s", "S"):
+                    self.toggle_sort()
+                elif key in ("r", "R"):
+                    self.status_msg = "[RESCANNING] Refreshing..."
+                    self.status_color = C_YELLOW
+                    self.draw()
+                    self.load_files()
+                    self.status_msg = "[REFRESHED] Scan complete."
+                    self.status_color = C_GREEN
+        finally:
+            sys.stdout.write("\033[?25h\033[2J\033[H")
+            sys.stdout.flush()
+
+
+def launch_tui(target_path: str = ".", min_size_mb: float = 100.0) -> None:
+    tui = DiskManagerTUI(target_path=target_path, min_size_mb=min_size_mb)
+    tui.run()
+
+
 def progress_display(scanned_files: int, found_large: int, current_path: str) -> None:
     max_path_len = 45
-    if len(current_path) > max_path_len:
-        short_path = "..." + current_path[-(max_path_len - 3):]
-    else:
-        short_path = current_path.ljust(max_path_len)
-
+    short_path = ("..." + current_path[-(max_path_len - 3):]) if len(current_path) > max_path_len else current_path.ljust(max_path_len)
     msg = f"\r[Scanning...] Files: {scanned_files:,} | Large Found: {found_large} | {short_path}"
     sys.stdout.write(msg[:105].ljust(105))
     sys.stdout.flush()
 
 
-def run_scan(
-    target_path: str,
-    min_size_mb: float = 100.0,
-    csv_output: str = None,
-    json_output: str = None,
-    limit: int = 50,
-    follow_symlinks: bool = False,
-) -> None:
+def run_scan(target_path: str, min_size_mb: float = 100.0, csv_output: str = None, json_output: str = None, limit: int = 50, follow_symlinks: bool = False) -> None:
     abs_path = os.path.abspath(target_path)
     if not os.path.exists(abs_path):
         print(f"\n[ERROR] Path does not exist: {abs_path}", file=sys.stderr)
@@ -334,13 +658,7 @@ def run_scan(
     print(f"Follow Symlinks  : {'Yes' if follow_symlinks else 'No'}")
     print("Please wait, scanning files...\n")
 
-    scanner = DiskScanner(
-        target_path=abs_path,
-        min_size_mb=min_size_mb,
-        follow_symlinks=follow_symlinks,
-        progress_callback=progress_display,
-    )
-
+    scanner = DiskScanner(target_path=abs_path, min_size_mb=min_size_mb, follow_symlinks=follow_symlinks, progress_callback=progress_display)
     try:
         large_files = scanner.scan()
     except KeyboardInterrupt:
@@ -379,7 +697,6 @@ def prompt_guided_scan() -> None:
         print("  [C] Custom path or directory")
 
     choice = input(f"\nEnter drive number or custom path [Default: {default_path}]: ").strip()
-
     if choice.isdigit() and 1 <= int(choice) <= len(drives):
         target_path = drives[int(choice) - 1]["path"]
     elif choice.upper() == "C":
@@ -413,11 +730,9 @@ def prompt_guided_scan() -> None:
 
     csv_file = None
     json_file = None
-
     if export_choice in ("2", "4"):
         csv_name = input("Enter CSV file name [Default: large_files_report.csv]: ").strip()
         csv_file = csv_name if csv_name else "large_files_report.csv"
-
     if export_choice in ("3", "4"):
         json_name = input("Enter JSON file name [Default: large_files_report.json]: ").strip()
         json_file = json_name if json_name else "large_files_report.json"
@@ -433,27 +748,47 @@ def prompt_guided_scan() -> None:
     symlink_input = input("Follow symbolic links? (y/N) [Default: N]: ").strip().lower()
     follow_symlinks = symlink_input in ("y", "yes")
 
-    run_scan(
-        target_path=target_path,
-        min_size_mb=min_size,
-        csv_output=csv_file,
-        json_output=json_file,
-        limit=limit,
-        follow_symlinks=follow_symlinks,
-    )
+    run_scan(target_path=target_path, min_size_mb=min_size, csv_output=csv_file, json_output=json_file, limit=limit, follow_symlinks=follow_symlinks)
+
+
+def prompt_tui_mode() -> None:
+    print("\n" + "-" * 75)
+    print("          LAUNCH BASHTOP-STYLE TUI DASHBOARD")
+    print("-" * 75)
+    drives = get_available_drives()
+    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+
+    if drives:
+        print("Available Storage Drives:")
+        for idx, d in enumerate(drives, start=1):
+            print(f"  [{idx}] {d['path']} (Free: {format_size(d['free'])} / Total: {format_size(d['total'])})")
+        print("  [C] Custom directory\n")
+
+    choice = input(f"Select drive or enter path to inspect [Default: {default_path}]: ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(drives):
+        target_path = drives[int(choice) - 1]["path"]
+    elif choice.upper() == "C":
+        custom_p = input("Enter custom directory path: ").strip()
+        target_path = custom_p if custom_p else default_path
+    elif choice:
+        target_path = choice
+    else:
+        target_path = default_path
+
+    size_input = input("Minimum file size in MB to display [Default: 100]: ").strip()
+    try:
+        min_size = float(size_input) if size_input else 100.0
+    except ValueError:
+        min_size = 100.0
+
+    launch_tui(target_path=target_path, min_size_mb=min_size)
 
 
 def quick_scan_default() -> None:
     drives = get_available_drives()
     target_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
     print(f"\n[QUICK SCAN] Scanning {target_path} for files >= 100 MB...")
-    run_scan(
-        target_path=target_path,
-        min_size_mb=100.0,
-        csv_output="large_files_report.csv",
-        limit=50,
-        follow_symlinks=False,
-    )
+    run_scan(target_path=target_path, min_size_mb=100.0, csv_output="large_files_report.csv", limit=50, follow_symlinks=False)
 
 
 def interactive_menu() -> None:
@@ -461,34 +796,31 @@ def interactive_menu() -> None:
         print("\n" + "=" * 75)
         print("                 SERVER DISK MANAGER - MAIN MENU")
         print("=" * 75)
-        print("  [1] Guided Scan (Configure drive, threshold & export options)")
-        print("  [2] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)")
-        print("  [3] View Server Storage Drives & Free Space")
-        print("  [4] Scan Current Directory (.)")
+        print("  [1] Bashtop-Style TUI Dashboard (Live Navigation & File Deletion) ⭐")
+        print("  [2] Guided Scan (Configure drive, threshold & export to CSV/JSON)")
+        print("  [3] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)")
+        print("  [4] View Server Storage Drives & Free Space")
+        print("  [5] Scan Current Directory (.)")
         print("  [0] Exit")
         print("=" * 75)
 
-        choice = input("Please select an option [0-4]: ").strip()
-
+        choice = input("Please select an option [0-5]: ").strip()
         if choice == "1":
-            prompt_guided_scan()
+            prompt_tui_mode()
         elif choice == "2":
-            quick_scan_default()
+            prompt_guided_scan()
         elif choice == "3":
+            quick_scan_default()
+        elif choice == "4":
             drives = get_available_drives()
             Reporter.print_drives(drives)
-        elif choice == "4":
-            run_scan(
-                target_path=".",
-                min_size_mb=100.0,
-                csv_output="current_dir_large_files.csv",
-                limit=50,
-            )
+        elif choice == "5":
+            run_scan(target_path=".", min_size_mb=100.0, csv_output="current_dir_large_files.csv", limit=50)
         elif choice in ("0", "exit", "quit", "q"):
             print("\nExiting Server Disk Manager. Goodbye!\n")
             break
         else:
-            print("\n[WARN] Invalid choice. Please enter a number between 0 and 4.")
+            print("\n[WARN] Invalid choice. Please enter a number between 0 and 5.")
 
         input("\nPress [Enter] to return to the menu...")
 
@@ -504,6 +836,7 @@ def main():
     parser.add_argument("-l", "--limit", type=int, default=50, help="Maximum number of rows to display in terminal table (default: 50)")
     parser.add_argument("--follow-symlinks", action="store_true", help="Follow symbolic links during scan (default: False)")
     parser.add_argument("-d", "--drives", action="store_true", help="Display list of server storage drives and usage without scanning")
+    parser.add_argument("-t", "--tui", action="store_true", help="Launch interactive Bashtop-style TUI dashboard with file deletion")
     parser.add_argument("-m", "--menu", action="store_true", help="Force launch the interactive menu")
 
     args = parser.parse_args()
@@ -513,18 +846,15 @@ def main():
         Reporter.print_drives(drives)
         sys.exit(0)
 
-    cli_flags_used = any([args.path, args.csv, args.json, "--min-size" in sys.argv, "-s" in sys.argv])
+    if args.tui:
+        target = args.path if args.path else "."
+        launch_tui(target_path=target, min_size_mb=args.min_size)
+        sys.exit(0)
 
+    cli_flags_used = any([args.path, args.csv, args.json, "--min-size" in sys.argv, "-s" in sys.argv])
     if cli_flags_used and not args.menu:
         target = args.path if args.path else "."
-        run_scan(
-            target_path=target,
-            min_size_mb=args.min_size,
-            csv_output=args.csv,
-            json_output=args.json,
-            limit=args.limit,
-            follow_symlinks=args.follow_symlinks,
-        )
+        run_scan(target_path=target, min_size_mb=args.min_size, csv_output=args.csv, json_output=args.json, limit=args.limit, follow_symlinks=args.follow_symlinks)
     else:
         interactive_menu()
 

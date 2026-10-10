@@ -23,6 +23,8 @@ if sys.platform == "win32":
 from disk_scanner.scanner import DiskScanner
 from disk_scanner.reporter import Reporter
 from disk_scanner.utils import get_available_drives, format_size
+from disk_scanner.tui import launch_tui
+
 
 
 def progress_display(scanned_files: int, found_large: int, current_path: str) -> None:
@@ -202,6 +204,46 @@ def quick_scan_default() -> None:
     )
 
 
+def prompt_tui_mode() -> None:
+    """
+    Selects drive or directory and launches the Bashtop-style TUI dashboard.
+    """
+    print("\n" + "-" * 75)
+    print("          LAUNCH BASHTOP-STYLE TUI DASHBOARD")
+    print("-" * 75)
+
+    drives = get_available_drives()
+    default_path = drives[0]["path"] if drives else ("C:\\" if os.name == "nt" else "/")
+
+    if drives:
+        print("Available Storage Drives:")
+        for idx, d in enumerate(drives, start=1):
+            free_str = format_size(d["free"])
+            total_str = format_size(d["total"])
+            print(f"  [{idx}] {d['path']} (Free: {free_str} / Total: {total_str})")
+        print("  [C] Custom directory")
+        print()
+
+    choice = input(f"Select drive or enter path to inspect [Default: {default_path}]: ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(drives):
+        target_path = drives[int(choice) - 1]["path"]
+    elif choice.upper() == "C":
+        custom_p = input("Enter custom directory path: ").strip()
+        target_path = custom_p if custom_p else default_path
+    elif choice:
+        target_path = choice
+    else:
+        target_path = default_path
+
+    size_input = input("Minimum file size in MB to display [Default: 100]: ").strip()
+    try:
+        min_size = float(size_input) if size_input else 100.0
+    except ValueError:
+        min_size = 100.0
+
+    launch_tui(target_path=target_path, min_size_mb=min_size)
+
+
 def interactive_menu() -> None:
     """
     Main interactive menu loop.
@@ -210,23 +252,26 @@ def interactive_menu() -> None:
         print("\n" + "=" * 75)
         print("                 SERVER DISK MANAGER - MAIN MENU")
         print("=" * 75)
-        print("  [1] Guided Scan (Configure drive, threshold & export options)")
-        print("  [2] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)")
-        print("  [3] View Server Storage Drives & Free Space")
-        print("  [4] Scan Current Directory (.)")
+        print("  [1] Bashtop-Style TUI Dashboard (Live Navigation & File Deletion) ⭐")
+        print("  [2] Guided Scan (Configure drive, threshold & export to CSV/JSON)")
+        print("  [3] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)")
+        print("  [4] View Server Storage Drives & Free Space")
+        print("  [5] Scan Current Directory (.)")
         print("  [0] Exit")
         print("=" * 75)
 
-        choice = input("Please select an option [0-4]: ").strip()
+        choice = input("Please select an option [0-5]: ").strip()
 
         if choice == "1":
-            prompt_guided_scan()
+            prompt_tui_mode()
         elif choice == "2":
-            quick_scan_default()
+            prompt_guided_scan()
         elif choice == "3":
+            quick_scan_default()
+        elif choice == "4":
             drives = get_available_drives()
             Reporter.print_drives(drives)
-        elif choice == "4":
+        elif choice == "5":
             run_scan(
                 target_path=".",
                 min_size_mb=100.0,
@@ -237,7 +282,7 @@ def interactive_menu() -> None:
             print("\nExiting Server Disk Manager. Goodbye!\n")
             break
         else:
-            print("\n[WARN] Invalid choice. Please enter a number between 0 and 4.")
+            print("\n[WARN] Invalid choice. Please enter a number between 0 and 5.")
 
         input("\nPress [Enter] to return to the menu...")
 
@@ -284,6 +329,11 @@ def main():
         help="Display list of server storage drives and usage without scanning"
     )
     parser.add_argument(
+        "-t", "--tui",
+        action="store_true",
+        help="Launch interactive Bashtop-style TUI dashboard with file deletion"
+    )
+    parser.add_argument(
         "-m", "--menu",
         action="store_true",
         help="Force launch the interactive menu"
@@ -295,6 +345,12 @@ def main():
     if args.drives:
         drives = get_available_drives()
         Reporter.print_drives(drives)
+        sys.exit(0)
+
+    # If --tui requested directly via CLI
+    if args.tui:
+        target = args.path if args.path else "."
+        launch_tui(target_path=target, min_size_mb=args.min_size)
         sys.exit(0)
 
     # If specific CLI parameters are provided, execute directly
@@ -313,6 +369,7 @@ def main():
     else:
         # Launch Interactive Menu
         interactive_menu()
+
 
 
 if __name__ == "__main__":

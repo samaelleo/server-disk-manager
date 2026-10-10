@@ -84,6 +84,24 @@ class TestDiskScanner(unittest.TestCase):
         self.assertIn("path", drives[0])
         self.assertIn("free", drives[0])
 
+    def test_tui_filtering_and_sorting(self):
+        from disk_scanner.tui import DiskManagerTUI, make_gauge_bar
+
+        tui = DiskManagerTUI(target_path=self.test_dir, min_size_mb=1.0)
+        tui.load_files()
+        self.assertEqual(len(tui.files), 2)
+
+        # Test filter
+        tui.filter_query = ".iso"
+        tui.apply_filter_and_sort()
+        self.assertEqual(len(tui.filtered_files), 1)
+        self.assertTrue(tui.filtered_files[0].path.endswith(".iso"))
+
+        # Test gauge bar
+        gauge = make_gauge_bar(50, 100, length=10)
+        self.assertIn("50.0%", gauge)
+
 
 if __name__ == "__main__":
     unittest.main()
+

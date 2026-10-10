@@ -1,8 +1,8 @@
-# 🗄️ Server Disk Manager - Large File Scanner
+# 🗄️ Server Disk Manager - Large File Scanner & TUI
 
-A high-performance, modular, zero-dependency Python tool to inspect server storage disks, locate heavy files (>= 100 MB by default), display formatted summaries, and export results to CSV and JSON formats.
+A high-performance, modular, zero-dependency Python tool to inspect server storage disks, locate heavy files (>= 100 MB by default), display formatted summaries, export results to CSV and JSON formats, and manage files interactively via a **Bashtop-inspired TUI with real-time file deletion**.
 
-All console output, reports, and table headers are in **English**, and the tool features a full **Interactive Menu** alongside **Command-Line (CLI)** capabilities.
+All console output, reports, and table headers are in **English**, and the tool features a full **Interactive Menu**, a **Bashtop-style TUI Dashboard**, and **Command-Line (CLI)** capabilities.
 
 ---
 
@@ -10,14 +10,17 @@ All console output, reports, and table headers are in **English**, and the tool 
 
 ### 🚀 One-Line Temporary Run with `curl` (اجرای موقت بدون نیاز به کلون):
 
-Run directly on any server without cloning or saving permanent files:
+Run directly on any server without cloning or leaving residue:
 
 #### 🐧 Linux / macOS:
 ```bash
-# Interactive menu (Zero-trace, auto-deletes when done)
+# Interactive menu with Bashtop TUI (Zero-trace, auto-deletes when done)
 bash <(curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/run.sh)
 
-# Or directly with arguments (Scan root / for >= 100MB, save report.csv):
+# Or directly launch the Bashtop TUI with file deletion:
+curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python3 - -t
+
+# Or scan root / for >= 100MB and save report.csv:
 curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python3 - -p / -s 100 -c /tmp/large_files.csv
 ```
 
@@ -26,8 +29,8 @@ curl -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/d
 # Interactive menu (Temporary run, auto-cleans up)
 curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py -o $env:TEMP\dm.py; python $env:TEMP\dm.py; Remove-Item $env:TEMP\dm.py
 
-# Or directly with arguments:
-curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py | python - -p C:\ -s 100 -c large_files.csv
+# Or directly launch the Bashtop TUI with file deletion:
+curl.exe -sSL https://raw.githubusercontent.com/samaelleo/server-disk-manager/main/disk_manager.py -o $env:TEMP\dm.py; python $env:TEMP\dm.py -t; Remove-Item $env:TEMP\dm.py
 ```
 
 ---
@@ -42,39 +45,47 @@ cd server-disk-manager
 
 # Run Interactive Menu
 python main.py
-```
 
-### CLI One-Liners:
-- **Interactive Menu:**
-  ```bash
-  python main.py
-  ```
-- **Direct Scan Drive `C:\` for files >= 100 MB and save to CSV:**
-  ```bash
-  python main.py -p C:\ -s 100 -c large_files.csv
-  ```
-- **Linux Server Scan `/var/log` for files >= 200 MB:**
-  ```bash
-  python3 main.py -p /var/log -s 200 -c report.csv
-  ```
-- **Check Server Storage Drives & Free Space:**
-  ```bash
-  python main.py -d
-  ```
+# Or launch Bashtop-Style TUI directly
+python main.py -t
+```
 
 > 💡 **Requirements**: Python 3.8+ (No external pip dependencies required - pure Python standard library).
 
 ---
 
-## ✨ Key Features
+## 🖥️ Bashtop-Style Interactive TUI Mode (`Option 1` or `-t`)
 
-- 🖥️ **Interactive Terminal Menu**: Choose tasks via an easy numeric menu (`Guided Scan`, `Quick Scan`, `View Storage Drives`, etc.).
-- 🚀 **High Performance & Low Memory**: Built using `os.scandir` and an iterative stack traversal to prevent recursion limits and maximize I/O speed.
-- 🛡️ **Graceful Permission Handling**: Skips system-restricted or inaccessible paths without crashing, tracking them under `Permission Denied`.
-- 📊 **Clean English Console Tables**: Displays ranked tables sorted by size descending, complete with human-readable sizes (MB, GB), extensions, modification timestamps, and full absolute paths.
-- 💾 **Export Options**: Export scan results directly to **CSV** (for Excel/spreadsheets) and **JSON** (for automation/APIs).
-- 💽 **Drive Detection & Health**: Automatic detection of server drive mount points (`C:\`, `D:\`, `/`, `/home`, etc.) and storage utilization.
-- 🌐 **Cross-Platform**: Ready for Windows Server and Linux environments.
+An interactive visual dashboard inspired by `bashtop`/`btop` for live disk navigation and disk space reclamation:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│          🗄️  SERVER DISK MANAGER - INTERACTIVE TUI (BASHTOP MODE)            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Storage [C:\] [████████████████████░░░░] 84.2% | Used: 400 GB | Free: 75 GB│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Path: C:\ (Threshold: >= 100 MB)          Files: 42 | Total: 88.50 GB       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  #    | SIZE        | EXT    | MODIFIED            | FILE PATH              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  1    | 14.50 GB    | .iso   | 2026-08-14 12:30:10 | C:\backups\db.iso      │
+│  2    | 4.20 GB     | .tar   | 2026-09-02 09:15:22 | C:\logs\archive.tar    │
+│  3    | 2.10 GB     | .mp4   | 2026-09-18 18:40:00 | C:\media\video.mp4     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Ready. Use arrows to browse, 'd' to delete selected file.                   │
+│ [↑/↓] Move  [d/DEL] Delete  [o] Details  [/] Search  [s] Sort  [r] Rescan   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 🎮 TUI Keybindings:
+- **`↑` / `↓`**: Move selection cursor up / down.
+- **`Page Up` / `Page Down`**: Scroll 15 files up / down.
+- **`d` or `Delete`**: **Delete the selected file** (prompts with safety confirmation dialog `yes`/`y` and updates disk space immediately).
+- **`o` or `ENTER`**: Open full file details (exact size in bytes, read/write permissions, timestamps).
+- **`/`**: Search / Filter files in real-time by keyword or extension (e.g. `.iso`, `backup`). Press `ESC` to clear.
+- **`s`**: Toggle sort modes (Largest first, Smallest first, Name A-Z, Modified date).
+- **`r`**: Re-scan directory and refresh live file list.
+- **`q` or `ESC`**: Exit TUI and return to main menu.
 
 ---
 
@@ -87,11 +98,14 @@ server-disk-manager/
 │   ├── __init__.py
 │   ├── scanner.py      # Core iterative directory scanner & stat collector
 │   ├── reporter.py     # Console tables, CSV & JSON exporter (English)
-│   └── utils.py        # Storage calculations, drive detection & formatters
+│   ├── utils.py        # Storage calculations, drive detection & formatters
+│   └── tui.py          # Bashtop-style interactive TUI with file deletion
 │
 ├── tests/
 │   └── test_scanner.py # Automated unit test suite
 │
+├── disk_manager.py     # Self-contained single-file script (for curl runs)
+├── run.sh              # Zero-trace temporary runner for Linux/macOS
 ├── main.py             # Main entry point (Interactive Menu + CLI)
 ├── .gitignore
 └── README.md
@@ -99,53 +113,21 @@ server-disk-manager/
 
 ---
 
-## 🎮 How to Use
+## 🎮 Main Menu Overview
 
-### 1. Interactive Menu Mode
-Simply run the script with no arguments:
-```bash
-python main.py
-```
+When running `python main.py`, the interactive menu provides:
 
-**Main Menu Interface:**
 ```text
 ===========================================================================
                  SERVER DISK MANAGER - MAIN MENU
 ===========================================================================
-  [1] Guided Scan (Configure drive, threshold & export options)
-  [2] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)
-  [3] View Server Storage Drives & Free Space
-  [4] Scan Current Directory (.)
+  [1] Bashtop-Style TUI Dashboard (Live Navigation & File Deletion) ⭐
+  [2] Guided Scan (Configure drive, threshold & export to CSV/JSON)
+  [3] Quick Scan Primary Drive (>= 100 MB -> Export to CSV)
+  [4] View Server Storage Drives & Free Space
+  [5] Scan Current Directory (.)
   [0] Exit
 ===========================================================================
-```
-
-#### Guided Scan Wizard (`Option 1`):
-The interactive wizard guides you step-by-step:
-1. **Target Location**: Select a detected server drive by number or enter a custom path.
-2. **Size Threshold**: Enter minimum size in MB (e.g. `100`, `500`, `1024` for 1 GB).
-3. **Export Format**: Choose `Console only`, `CSV`, `JSON`, or `Both`.
-4. **Display Limit**: Choose maximum rows to print on screen (default `50`).
-5. **Symlinks**: Choose whether to traverse symbolic links.
-
----
-
-### 2. Command-Line Arguments (CLI Mode)
-You can automate or script scans without interactive prompts:
-
-#### Scan drive `C:\` for files >= 100 MB and export to CSV:
-```bash
-python main.py -p C:\ -s 100 -c large_files.csv
-```
-
-#### Scan `/var/log` on Linux for files >= 200 MB with both CSV and JSON output:
-```bash
-python3 main.py -p /var/log -s 200 -c logs_report.csv -j logs_report.json
-```
-
-#### View available drives and free space without scanning:
-```bash
-python main.py -d
 ```
 
 ---
@@ -154,6 +136,7 @@ python main.py -d
 
 | Flag | Long Option | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `-t` | `--tui` | - | Launch interactive Bashtop-style TUI dashboard directly |
 | `-p` | `--path` | `.` | Target folder or drive to scan (e.g. `C:\` or `/var`) |
 | `-s` | `--min-size` | `100` | Minimum file size threshold in Megabytes (MB) |
 | `-c` | `--csv` | `None` | Save output to a CSV file (e.g. `report.csv`) |
@@ -167,7 +150,7 @@ python main.py -d
 
 ## 🧪 Running Unit Tests
 
-Run the test suite to verify file scanning, size calculations, and export functionality:
+Run the test suite to verify file scanning, size calculations, export, and TUI filtering:
 ```bash
 python -m unittest tests/test_scanner.py
 ```
